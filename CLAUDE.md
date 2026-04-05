@@ -9,7 +9,7 @@ To set up a new experiment, work with the user to:
     - README.md — repository context.
     - train.py — the file you modify. Model architecture, optimizer, training loop.
     - evaluate.py - file to evaluate the training. Do not modify.
-4. Verify data exists: Check that ROMS contains game files as *.bin. If not, tell the human to put game files into the folder.
+4. Verify data exists: Check that ROMS contains game files (*.nes, *.smc). If not, tell the human to put game files into the folder.
 5. Initialize results.tsv: Create results.tsv with just the header row. The baseline will be recorded after the first run.
 6. Confirm and go: Confirm setup looks good.
 
@@ -18,7 +18,7 @@ Once you get confirmation, kick off the experimentation.
 ## Experimentation
 
 Each experiment runs on a single GPU. The training script runs for a fixed time budget of 5 minutes (wall clock training time, excluding startup/compilation). You launch it simply as: 
-```uv run src/train.py```.
+```uv run --no-sync src/train.py```.
 
 **What you CAN do:**
 
@@ -34,11 +34,11 @@ Each experiment runs on a single GPU. The training script runs for a fixed time 
 - Do not modify AGENTS.md.
 - Do not modify CLAUDE.md.
 
-**The goal is simple**: maximize `combined_metric` as computed by `evaluate.py`:
-- If the agent finishes the level (`flag_get=True`): `10000 + (1000 - seconds_survived) + max_x_dist`
-- Otherwise: `max_x_dist`
+**The goal is simple**: maximize `total_reward` as computed by `evaluate.py`:
+- If the agent finishes the level (`flag_get=True`): `10000 + (400 - seconds_to_finish) + score + max_x_dist`
+- Otherwise: `score + max_x_dist`
 
-Finishing the level is the dominant objective (10000 bonus). Among runs that finish, faster is better. Among runs that don't finish, going further right is better. Everything is fair game: change the architecture, use other Reinforcement learning algorithms you can find in the Internet, use frame stacking for images, the optimizer, the hyperparameters, the batch size, the model size, the reward functions, the rewards. The only constraint is that the code runs without crashing and finishes within the time budget.
+Finishing the level is the dominant objective (10000 bonus). Among runs that finish, faster + higher score + further right is better. Among runs that don't finish, score and distance count equally. Everything is fair game: change the architecture, use other Reinforcement learning algorithms you can find in the Internet, use frame stacking for images, the optimizer, the hyperparameters, the batch size, the model size, the reward functions, the rewards. The only constraint is that the code runs without crashing and finishes within the time budget.
 
 Document your changes in a file called CHANGES.MD, so people can later read and understand what you did. Be sure to explain your changes in that file so readers understand why you did the changes. Be aware that the reader might not have a lot of knowledge, so explain things clearly. But be concise: add references or links instead of very long explanations.
 
@@ -49,39 +49,49 @@ Document your changes in a file called CHANGES.MD, so people can later read and 
 **The first run**: Your very first run should always be to establish the baseline, so you will run the training script as is.
 
 **Output format**
-Once the script finishes it prints a summary like this:
+Once both scripts finish, the log contains lines like:
 ```
+# from train.py:
 training_seconds: 300
-total_seconds: 305
-peak_vram_mb: 45060.2
-seconds_to_finish_level:70
-score: 100
+total_seconds: 300
+peak_vram_mb: 4500.0
+train_best_reward: 850.0
+train_seconds_to_finish: 999.0
+train_best_score: 0
+mean_episode_reward: 42.3
+
+# from evaluate.py:
+flag_get: False
+max_x_dist: 314
+score: 200
+seconds_to_finish: 0.0
+total_reward: 514.0
 ```
 
-Note that the script is configured to always stop after 5 minutes, so depending on the computing platform of this computer the numbers might look different. You can extract the key metric from the log file with a regular expression.
+The key decision metric is `total_reward` (from evaluate.py). Note that the script is configured to always stop after 5 minutes, so numbers will vary by machine.
 
 ## Logging results
 
 When an experiment is done, log it to results.tsv (tab-separated, NOT comma-separated — commas break in descriptions).
 
-The TSV has a header row and 8 columns (written automatically by `evaluate.py`, with `status` and `description` left as `pending`/`auto-evaluation` for you to update):
+The TSV has a header row and 8 columns. You write each row yourself after evaluating the results:
 
-commit	total_reward	seconds_to_finish	combined_metric	flag_get	max_x_dist	status	description
+commit	seconds_to_finish	total_reward	flag_get	max_x_dist	score	status	description
 
 1. git commit hash (short, 7 chars)
-2. total_reward from the evaluation episode
-3. seconds the agent took to finish the level (0 if not finished)
-4. combined_metric: the primary optimization target
-5. flag_get: True/False — whether the agent finished the level
-6. max_x_dist: furthest x position reached
+2. seconds_to_finish: seconds to finish the level (0 if not finished)
+3. total_reward: the primary optimization target
+4. flag_get: True/False — whether the agent finished the level
+5. max_x_dist: furthest x position reached
+6. score: in-game score achieved
 7. status: `keep`, `discard`, or `crash` — update this manually after reviewing
 8. description: short text of what this experiment tried — update this manually
 
 Example:
 ```
-commit	total_reward	seconds_to_finish	combined_metric	flag_get	max_x_dist	status	description
-aff34	200.0	0.0	512.0	False	512	keep	baseline
-a35gfd	450.0	44.0	10512.0	True	512	keep	optimized reward function
+commit	seconds_to_finish	total_reward	flag_get	max_x_dist	score	status	description
+aff34	0.0	514.0	False	514	0	keep	baseline
+a35gfd	44.0	11156.0	True	512	200	keep	optimized reward function
 ```
 
 ## The experiment loop
@@ -92,13 +102,13 @@ LOOP FOREVER:
 1. Look at the git state: the current branch/commit we're on
 2. Tune train.py with an experimental idea by directly hacking the code.
 3. git commit
-4. Run training: ```uv run src/train.py > run.log 2>&1``` (redirect everything — do NOT use tee or let output flood your context)
-5. Run evaluation: ```uv run src/evaluate.py >> run.log 2>&1``` (appends to same log; also writes a row to results.tsv automatically)
-6. Read out the results: grep "^seconds_to_finish_level:\|^combined_metric:\|^peak_vram_mb:\|^flag_get:" run.log
+4. Run training: ```uv run --no-sync src/train.py > run.log 2>&1``` (redirect everything — do NOT use tee or let output flood your context)
+5. Run evaluation: ```uv run --no-sync src/evaluate.py >> run.log 2>&1``` (appends to same log)
+6. Read out the results: grep "^total_reward:\|^flag_get:\|^max_x_dist:\|^score:\|^seconds_to_finish:\|^peak_vram_mb:" run.log
 7. If the grep output is empty, the run crashed. Run tail -n 50 run.log to read the Python stack trace and attempt a fix. If you can't get things to work after more than a few attempts, give up.
-8. Update the results.tsv row written by evaluate.py: set `status` to `keep`/`discard`/`crash` and `description` to a short summary. (NOTE: do not commit results.tsv — leave it untracked by git)
-9. If combined_metric improved (higher value), you "advance" the branch, keeping the git commit.
-10. If combined_metric is equal or worse, you git reset back to where you started.
+8. Append a row to results.tsv with the results and your decision. Use the git short hash, the metrics from the log, your status decision, and a short description of what you changed. (NOTE: do not commit results.tsv — leave it untracked by git)
+9. If total_reward improved (higher value), you "advance" the branch, keeping the git commit.
+10. If total_reward is equal or worse, you git reset back to where you started.
 
 The idea is that you are a completely autonomous researcher trying things out. If they work, keep. If they don't, discard. And you're advancing the branch so that you can iterate. If you feel like you're getting stuck in some way, you can rewind but you should probably do this very very sparingly (if ever).
 

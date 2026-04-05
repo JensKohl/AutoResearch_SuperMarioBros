@@ -266,9 +266,9 @@ def train():
         print(f"peak_vram_mb: {torch.cuda.max_memory_allocated() / 1e6 if torch.cuda.is_available() else 0:.1f}")
 
         seconds_to_finish = 400 - best_time if best_time > 0 else 999
-        print(f"total_reward: {best_total_reward:.1f}")
-        print(f"seconds_to_finish_level: {seconds_to_finish:.1f}")
-        print(f"score: {best_score}")
+        print(f"train_best_reward: {best_total_reward:.1f}")
+        print(f"train_seconds_to_finish: {seconds_to_finish:.1f}")
+        print(f"train_best_score: {best_score}")
 
         if len(total_rewards):
             print(f"mean_episode_reward: {np.mean(total_rewards):.1f}")

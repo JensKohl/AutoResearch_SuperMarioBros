@@ -1,5 +1,4 @@
 import time
-import subprocess
 import argparse
 import os
 import sys
@@ -30,10 +29,10 @@ def evaluate(render=False):
     model.eval()
     state, info = env.reset()
 
-    total_reward = 0
     frames_survived = 0
     max_x_dist = 0
     flag_get = False
+    score = 0
 
     with torch.no_grad():
         for _ in range(MAX_EPISODE_STEPS):
@@ -41,10 +40,10 @@ def evaluate(render=False):
             action = model(state_tensor).max(1)[1].view(1, 1).item()
 
             state, reward, terminated, truncated, info = env.step(action)
-            total_reward += reward
             frames_survived += 1
             max_x_dist = max(max_x_dist, info.get('x_pos', 0))
             flag_get = info.get('flag_get', False)
+            score = info.get('score', 0)
 
             if render:
                 time.sleep(0.01)
@@ -53,33 +52,21 @@ def evaluate(render=False):
                 break
 
     seconds_survived = frames_survived / 60.0
+    seconds_to_finish = seconds_survived if flag_get else 0.0
     env.close()
 
+    # total_reward is the key metric: combines flag completion, speed, score, and distance
     if flag_get:
-        combined_metric = 10000 + (1000 - seconds_survived) + max_x_dist
+        total_reward = 10000 + (400 - seconds_to_finish) + score + max_x_dist
     else:
-        combined_metric = max_x_dist
+        total_reward = score + max_x_dist
 
     print(f"Evaluation finished.")
     print(f"flag_get: {flag_get}")
     print(f"max_x_dist: {max_x_dist}")
-    print(f"seconds_to_finish: {seconds_survived if flag_get else 0.0:.1f}")
-    print(f"combined_metric: {combined_metric:.1f}")
-
-    try:
-        commit = subprocess.check_output(['git', 'rev-parse', '--short', 'HEAD']).decode('ascii').strip()
-    except Exception:
-        commit = "unknown"
-
-    results_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "results.tsv")
-    line = (
-        f"{commit}\t{total_reward:.1f}\t{seconds_survived if flag_get else 0.0:.1f}\t"
-        f"{combined_metric:.1f}\t{flag_get}\t{max_x_dist}\tpending\tauto-evaluation\n"
-    )
-
-    with open(results_path, "a") as f:
-        f.write(line)
-    print(f"Results appended to {results_path}")
+    print(f"score: {score}")
+    print(f"seconds_to_finish: {seconds_to_finish:.1f}")
+    print(f"total_reward: {total_reward:.1f}")
 
 
 if __name__ == "__main__":
