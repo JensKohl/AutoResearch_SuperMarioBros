@@ -141,7 +141,7 @@ class FrameSkip(gym.Wrapper):
         return obs, total_reward, terminated, truncated, info
 
 
-# --- DQN Model ---
+# --- Dueling DQN Model ---
 class DQN(nn.Module):
     def __init__(self, n_actions):
         super(DQN, self).__init__()
@@ -154,7 +154,14 @@ class DQN(nn.Module):
             nn.Conv2d(64, 64, kernel_size=3, stride=1),
             nn.ReLU()
         )
-        self.fc = nn.Sequential(
+        # Value stream: estimates V(s)
+        self.value_stream = nn.Sequential(
+            nn.Linear(3136, 512),
+            nn.ReLU(),
+            nn.Linear(512, 1)
+        )
+        # Advantage stream: estimates A(s, a)
+        self.advantage_stream = nn.Sequential(
             nn.Linear(3136, 512),
             nn.ReLU(),
             nn.Linear(512, n_actions)
@@ -163,7 +170,10 @@ class DQN(nn.Module):
     def forward(self, x):
         features = self.conv(x)
         features = features.view(features.size(0), -1)
-        return self.fc(features)
+        value = self.value_stream(features)
+        advantage = self.advantage_stream(features)
+        # Combine: Q(s,a) = V(s) + A(s,a) - mean(A(s,a'))
+        return value + advantage - advantage.mean(dim=1, keepdim=True)
 
 
 # --- Replay Buffer ---

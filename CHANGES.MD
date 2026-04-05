@@ -22,3 +22,12 @@ Each experiment appends a section here describing what was changed and why.
 - Gradient clipping (`clip_grad_norm_=10`): Prevents exploding gradients, standard practice.
 
 **Why:** The agent was training for 5 minutes but still acting mostly randomly at evaluation time — the epsilon decay was too slow. Disabling rendering frees up compute for more actual learning steps.
+
+## Experiment 5 — Dueling DQN architecture
+
+**What changed:** Replaced the single FC output head with two separate streams:
+- **Value stream**: estimates V(s) — how good is being in this state
+- **Advantage stream**: estimates A(s,a) — how much better is each action vs average
+- Combined as: `Q(s,a) = V(s) + A(s,a) - mean(A(s,a'))`
+
+**Why:** Dueling DQN ([Wang et al. 2016](https://arxiv.org/abs/1511.06581)) helps in states where the choice of action doesn't matter much (e.g., running on flat ground). The value stream can learn general "how good is this state" independently from the advantage stream's "which action is best". This typically improves sample efficiency — important when we only have 5 minutes of training.
