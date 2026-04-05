@@ -1,0 +1,7 @@
+ROMS/
+results.tsv
+.venv/
+__pycache__/
+*.pyc
+MODELS/
+run.log

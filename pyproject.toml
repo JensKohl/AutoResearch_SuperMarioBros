@@ -1,0 +1,25 @@
+[project]
+name = "autoresearch-supermario"
+version = "0.1.0"
+description = "AutoResearch super mario reinforcement learning framework"
+readme = "README.md"
+requires-python = "==3.8.*"
+dependencies = [
+    "gym-super-mario-bros==7.3.0",
+    "nes-py==8.2.1",
+    "gymnasium",
+    "shimmy",
+    "numpy<2.0.0",
+    "opencv-python>=4.11.0.86",
+    "tensorboard>=2.14.0",
+    "torch==2.4.1",
+    "torchvision==0.19.1",
+]
+
+[[tool.uv.index]]
+name = "pytorch-cuda"
+url = "https://download.pytorch.org/whl/cu124"
+explicit = true
+
+[tool.uv.sources]
+torch = [{ index = "pytorch-cuda" }]
