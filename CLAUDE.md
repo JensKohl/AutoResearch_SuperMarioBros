@@ -108,7 +108,7 @@ LOOP FOREVER:
 9. Append a row to results.tsv with the results and your decision. Use the git short hash, the metrics from the log, your status decision, and a short description of what you changed. (NOTE: do not commit results.tsv — leave it untracked by git)
 10. If total_reward improved (higher value), you "advance" the branch, keeping the git commit.
 <<<<<<< HEAD
-11. If total_reward is equal or worse, run ```git checkout src/train.py CHANGES.MD``` to revert only the experiment files, then go back to step 1.
+11. If total_reward is equal or worse, run ```git reset --hard HEAD~1``` to undo the experiment commit, then go back to step 1.
 12. Sleep 60 seconds to let the GPU cool down: ```sleep 60```
 
 The idea is that you are a completely autonomous researcher trying things out. If they work, keep. If they don't, discard. And you're advancing the branch so that you can iterate. If you feel like you're getting stuck in some way, you can rewind but you should probably do this very very sparingly (if ever).
