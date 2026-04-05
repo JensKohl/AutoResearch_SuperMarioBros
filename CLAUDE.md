@@ -27,7 +27,7 @@ Each experiment runs on a single GPU. The training script runs for a fixed time 
 **What you CANNOT do:**
 
 - Modify evaluate.py. It is read-only. It contains the test run.
-- Modify constants.py. It contains trainings constants (time budget, sequence length, etc).
+- Modify constants.py. It contains training constants (TIME_BUDGET, MAX_EPISODE_STEPS, PRO_MOVEMENT, EVAL_SEEDS).
 - Install new packages or add dependencies. You can only use what's already in pyproject.toml.
 - Modify the evaluation harness. The defined reward in evaluate.py is the ground truth metric.
 - Do not modify README.md.
@@ -51,7 +51,6 @@ Document your changes in a file called CHANGES.MD, so people can later read and 
 **Output format**
 Once both scripts finish, the log contains lines like:
 ```
-# from train.py:
 training_seconds: 300
 total_seconds: 300
 peak_vram_mb: 4500.0
@@ -59,8 +58,6 @@ train_best_reward: 850.0
 train_seconds_to_finish: 999.0
 train_best_score: 0
 mean_episode_reward: 42.3
-
-# from evaluate.py:
 flag_get: False
 max_x_dist: 314
 score: 200
