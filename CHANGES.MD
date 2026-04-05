@@ -31,3 +31,15 @@ Each experiment appends a section here describing what was changed and why.
 - Combined as: `Q(s,a) = V(s) + A(s,a) - mean(A(s,a'))`
 
 **Why:** Dueling DQN ([Wang et al. 2016](https://arxiv.org/abs/1511.06581)) helps in states where the choice of action doesn't matter much (e.g., running on flat ground). The value stream can learn general "how good is this state" independently from the advantage stream's "which action is best". This typically improves sample efficiency — important when we only have 5 minutes of training.
+
+## Experiment 4 — Death penalty, stronger distance reward, higher LR (discarded)
+
+**What changed:**
+- Added death penalty: `-50` reward when Mario loses a life (`info['life']` decreases).
+- Increased distance reward multiplier: `2.0 → 3.0`.
+- Increased flag bonus: `1000 → 5000`.
+- Increased learning rate: `1e-4 → 3e-4`.
+
+**Why:** With eval getting `score=0` and `max_x_dist=315`, the agent moves right but doesn't push through obstacles. Explicit death penalty + stronger rightward incentive should teach the agent to avoid dying while pressing forward.
+
+**Result:** total_reward=310 vs 315 — marginally worse. Discarded.
