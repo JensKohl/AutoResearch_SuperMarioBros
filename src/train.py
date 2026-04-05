@@ -1,4 +1,5 @@
 import time
+import subprocess
 import gym_super_mario_bros
 from nes_py.wrappers import JoypadSpace
 import shimmy
@@ -30,6 +31,18 @@ RENDER = True
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 warnings.filterwarnings("ignore")
+
+MAX_GPU_TEMP = 85  # °C — stop training gracefully if exceeded
+
+def get_gpu_temp():
+    try:
+        out = subprocess.check_output(
+            ['nvidia-smi', '--query-gpu=temperature.gpu', '--format=csv,noheader'],
+            timeout=3
+        )
+        return int(out.decode().strip())
+    except Exception:
+        return 0
 
 
 def make_env(render=False):
@@ -251,7 +264,11 @@ def train():
                     break
 
             total_rewards.append(episode_reward)
-            print(f"Episode {len(total_rewards):>3} | Reward: {episode_reward:>6.1f} | Epsilon: {eps_threshold:>5.3f} | Total Steps: {steps_done}")
+            gpu_temp = get_gpu_temp()
+            print(f"Episode {len(total_rewards):>3} | Reward: {episode_reward:>6.1f} | Epsilon: {eps_threshold:>5.3f} | Steps: {steps_done} | GPU: {gpu_temp}°C")
+            if gpu_temp >= MAX_GPU_TEMP:
+                print(f"GPU temperature {gpu_temp}°C >= {MAX_GPU_TEMP}°C limit — stopping training to cool down.")
+                break
 
     except KeyboardInterrupt:
         pass

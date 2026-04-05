@@ -98,14 +98,16 @@ LOOP FOREVER:
 
 1. Look at the git state: the current branch/commit we're on
 2. Tune train.py with an experimental idea by directly hacking the code.
-3. git commit
-4. Run training: ```uv run --no-sync src/train.py > run.log 2>&1``` (redirect everything — do NOT use tee or let output flood your context)
-5. Run evaluation: ```uv run --no-sync src/evaluate.py >> run.log 2>&1``` (appends to same log)
-6. Read out the results: grep "^total_reward:\|^flag_get:\|^max_x_dist:\|^score:\|^seconds_to_finish:\|^peak_vram_mb:" run.log
-7. If the grep output is empty, the run crashed. Run tail -n 50 run.log to read the Python stack trace and attempt a fix. If you can't get things to work after more than a few attempts, give up.
-8. Append a row to results.tsv with the results and your decision. Use the git short hash, the metrics from the log, your status decision, and a short description of what you changed. (NOTE: do not commit results.tsv — leave it untracked by git)
-9. If total_reward improved (higher value), you "advance" the branch, keeping the git commit.
-10. If total_reward is equal or worse, you git reset back to where you started.
+3. Update CHANGES.MD: append a section describing what you changed and why.
+4. git commit (include both train.py and CHANGES.MD)
+5. Run training: ```uv run --no-sync src/train.py > run.log 2>&1``` (redirect everything — do NOT use tee or let output flood your context)
+6. Run evaluation: ```uv run --no-sync src/evaluate.py >> run.log 2>&1``` (appends to same log)
+7. Read out the results: grep "^total_reward:\|^flag_get:\|^max_x_dist:\|^score:\|^seconds_to_finish:\|^peak_vram_mb:" run.log
+8. If the grep output is empty, the run crashed. Run tail -n 50 run.log to read the Python stack trace and attempt a fix. If you can't get things to work after more than a few attempts, give up.
+9. Append a row to results.tsv with the results and your decision. Use the git short hash, the metrics from the log, your status decision, and a short description of what you changed. (NOTE: do not commit results.tsv — leave it untracked by git)
+10. If total_reward improved (higher value), you "advance" the branch, keeping the git commit.
+11. If total_reward is equal or worse, run ```git checkout src/train.py CHANGES.MD``` to revert only the experiment files, then go back to step 1.
+12. Sleep 60 seconds to let the GPU cool down: ```sleep 60```
 
 The idea is that you are a completely autonomous researcher trying things out. If they work, keep. If they don't, discard. And you're advancing the branch so that you can iterate. If you feel like you're getting stuck in some way, you can rewind but you should probably do this very very sparingly (if ever).
 
