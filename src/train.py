@@ -22,12 +22,12 @@ from src.constants import TIME_BUDGET, MAX_EPISODE_STEPS, PRO_MOVEMENT
 BATCH_SIZE = 128
 GAMMA = 0.99
 EPS_START = 1.0
-EPS_END = 0.02
-EPS_DECAY = 10000
-TARGET_UPDATE = 1000
-MEMORY_SIZE = 10000
+EPS_END = 0.05
+EPS_DECAY = 3000
+TARGET_UPDATE = 500
+MEMORY_SIZE = 20000
 LR = 1e-4
-RENDER = True
+RENDER = False
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 warnings.filterwarnings("ignore")
@@ -252,9 +252,10 @@ def train():
                         next_q_values = target_net(next_states).max(1)[0]
                         target_q_values = rewards + (GAMMA * next_q_values * (1 - dones))
 
-                    loss = nn.MSELoss()(q_values.squeeze(), target_q_values)
+                    loss = nn.SmoothL1Loss()(q_values.squeeze(), target_q_values)
                     optimizer.zero_grad()
                     loss.backward()
+                    nn.utils.clip_grad_norm_(policy_net.parameters(), 10.0)
                     optimizer.step()
 
                 if steps_done % TARGET_UPDATE == 0:
