@@ -213,7 +213,7 @@ def train():
     target_net.load_state_dict(policy_net.state_dict())
     target_net.eval()
 
-    optimizer = optim.Adam(policy_net.parameters(), lr=LR)
+    optimizer = optim.RMSprop(policy_net.parameters(), lr=2.5e-4, alpha=0.95, eps=0.01)
     memory = ReplayBuffer(MEMORY_SIZE)
     steps_done = 0
 
