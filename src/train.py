@@ -206,6 +206,7 @@ def train():
     optimizer = optim.RMSprop(policy_net.parameters(), lr=2.5e-4, alpha=0.95, eps=0.01)
     memory = ReplayBuffer(MEMORY_SIZE)
     steps_done = 0
+    buffer_reset_done = False
 
     start_time = time.time()
     total_rewards = []
@@ -267,6 +268,12 @@ def train():
 
                 if steps_done % TARGET_UPDATE == 0:
                     target_net.load_state_dict(policy_net.state_dict())
+
+                # At midpoint: clear replay buffer so the now-smarter policy
+                # re-fills it with higher-quality experiences
+                if not buffer_reset_done and (time.time() - start_time) >= TIME_BUDGET / 2:
+                    memory = ReplayBuffer(MEMORY_SIZE)
+                    buffer_reset_done = True
 
                 if done or (time.time() - start_time >= TIME_BUDGET):
                     break
