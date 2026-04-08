@@ -1078,3 +1078,26 @@ only got x=315 from. By keeping greedy and stochastic tracking separate and
 PREFERRING the greedy snapshot, we ensure eval uses the checkpoint that
 actually performed best greedily during training.
 
+**Result:** total_reward = 314 (max_x=314, score=0). No crash. Greedy
+snapshot correctly used (greedy_x=314, stochastic_x=1428). The greedy
+policy is confirmed stuck at x=314 (first pit in 1-1). The stochastic
+policy easily passes it; the greedy policy always picks the wrong action.
+Root cause: policy distribution is spread at the pit step — probability
+of right+A is not dominant enough for argmax to pick it. Need more
+gradient updates to converge the policy to be more decisive.
+
+## Exp49 — PPO faster convergence: smaller rollout + minimal entropy
+
+**What changed:**
+- `N_STEPS`: 256 → 128 (twice as many rollouts and PPO updates per minute)
+- `ENTROPY_COEF`: 0.03 → 0.005 (minimal entropy bonus — encourage the policy to peak at correct actions faster)
+
+**Why:** The greedy PPO policy always fails at x=314 (first pit), even though
+stochastic policy passes it easily. Analysis: with P(right+A at pit) ≈ 0.35
+and 3-step jump requirement, P(successful greedy jump) ≈ 0% (wrong argmax).
+The policy needs to reach P(right+A at pit) > 0.5 for greedy success. With
+N_STEPS=256, we get ~143 rollouts in 10 minutes. With N_STEPS=128, we get
+~286 rollouts = twice as many gradient updates = faster convergence to a
+peaked, decisive policy. Minimal entropy (0.005) further encourages the
+policy to commit to confident actions rather than spreading probability.
+
