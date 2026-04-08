@@ -81,3 +81,24 @@ gentle enough that it should not bottleneck learning while still cutting off
 pathological updates. It also lays the groundwork for retrying n-step returns later
 (Exp3 hypothesis: noisy n-step targets caused divergence — clipping should help).
 
+**Result:** `total_reward=635`, `max_x_dist=435`, `score=200`, `flag_get=False`.
+**+39 over Exp2 — kept.** Notable: first run to score non-zero in-game points
+(score=200 from stomping an enemy), suggesting the policy is now stable enough to
+interact with the environment instead of just running right. Slightly lower
+`max_x_dist` than Exp2 (435 vs 596) but the score more than compensates and shows
+richer behaviour. Clipping is keeping the net grounded.
+
+## Exp5 — Dueling DQN
+
+**What changed:** Replaced the single fully-connected head with two separate heads —
+a 1-unit value head `V(s)` and an `n_actions`-unit advantage head `A(s,a)` — combined
+as `Q(s,a) = V(s) + A(s,a) - mean_a A(s,a)`. The convolutional trunk is unchanged.
+
+**Why:** In dueling DQN (Wang et al. 2016, <https://arxiv.org/abs/1511.06581>), the
+network separately learns "how good is this state?" from "how much does each action
+matter here?". Many Mario states are dominated by state value (falling into a pit,
+near the flag, stuck against a pipe) where all actions are similarly good or bad;
+the value head generalises across these without having to update every action's
+Q-value independently. Rainbow uses it; it routinely gives a few percent improvement
+on Atari. Small code change, minimal VRAM bump (one extra linear layer of 1 unit).
+
