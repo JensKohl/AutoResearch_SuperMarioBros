@@ -307,3 +307,10 @@ runtime (the init runs once), has no interaction with the update rate (so it
 shouldn't hit the sharp-edge failure mode the last few experiments showed), and
 is completely orthogonal to everything else in Exp9's stack.
 
+**Result:** `total_reward=1599`, `max_x_dist=899`, `score=700`, `flag_get=False`.
+**+100 over Exp9 — kept.** Same `max_x_dist` (the agent is still hitting the
+~x=899 obstacle) but the score climbed 600 → 700 — more enemies stomped along
+the way. Modest but positive, and the mechanism is orthogonal so it stacks with
+future experiments. Noted: the persistent x=899 wall is clearly the next thing
+to attack — every experiment since Exp6 plateaus there.
+
