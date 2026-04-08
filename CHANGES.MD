@@ -253,3 +253,16 @@ punishes the random actions that were our main source of useful data. The
 heuristic only pays off later when the agent has committed to a greedy policy,
 which we don't reach in 5 min. Reverted.
 
+## Exp13 — Higher EPS_END floor (0.02 → 0.1)
+
+**What changed:** `EPS_END = 0.02 → 0.1`. One number.
+
+**Why:** The current best (Exp9, 1499) consistently stalls around `max_x_dist=899`
+— almost certainly a tall pipe or similar obstacle that needs a well-timed jump.
+The random action floor of 2% is probably too low to keep discovering such timing
+tricks within the 5-min budget. Raising it to 10% means roughly one in every ten
+actions is a random exploration probe, which should give the replay buffer enough
+jumping trials for the network to see the pipe-crossing and reinforce it.
+Explicitly: this does *not* speed up decay, it only raises the floor — early
+training is unchanged (ε is well above 0.1 anyway), we only differ at the tail.
+
