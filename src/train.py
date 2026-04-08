@@ -157,9 +157,9 @@ class DQN(nn.Module):
             nn.ReLU()
         )
         self.fc = nn.Sequential(
-            nn.Linear(3136, 1024),
+            nn.Linear(3136, 512),
             nn.ReLU(),
-            nn.Linear(1024, n_actions)
+            nn.Linear(512, n_actions)
         )
         # Kaiming init for ReLU conv/fc layers
         for m in self.modules():
@@ -237,7 +237,6 @@ def train():
             nstep_buffer.clear()
             episode_reward = 0
             episode_max_x = 0
-            episode_last_score = 0
 
             for t in range(MAX_EPISODE_STEPS):
                 eps_threshold = EPS_END + (EPS_START - EPS_END) * np.exp(-1. * steps_done / EPS_DECAY)
@@ -266,9 +265,7 @@ def train():
                     best_score = current_score
                     best_time = current_time
 
-                # Track per-episode peak position and final score for snapshot selection
                 episode_max_x = max(episode_max_x, info.get('x_pos', 0))
-                episode_last_score = current_score
 
                 if len(memory) >= LEARN_START:
                     states, actions, rewards, next_states, dones = memory.sample(BATCH_SIZE)
@@ -311,7 +308,9 @@ def train():
             total_rewards.append(episode_reward)
             # Snapshot the model after any episode that beats our best
             # eval-aligned proxy (score + max_x_dist), matching evaluate.py.
-            episode_metric = episode_last_score + episode_max_x
+            # Use max_x only: score-farming (looping for coins) can inflate
+            # episode_last_score without representing real level progress.
+            episode_metric = episode_max_x
             if episode_metric > best_snapshot_metric:
                 best_snapshot_metric = episode_metric
                 best_snapshot_state = {k: v.detach().cpu().clone() for k, v in policy_net.state_dict().items()}

@@ -627,6 +627,30 @@ FC layer that maps 3136 conv features to action Q-values. Doubling it from
 policy distinctions needed in later parts of the level. The VRAM increase
 is minimal (an extra ~6M parameters on top of the existing ~1.7M).
 
+**Result:** total_reward = 635 (max_x=435, score=200).
+saved_snapshot_metric=20061 shows training captured a very high metric, but
+greedy eval only reached x=435. The wider network may be accumulating score
+in training via looping/farming — `episode_last_score + episode_max_x`
+snapshot metric is vulnerable because high score (coins/enemies in loops)
+can trump high max_x. Reverted. Next: fix snapshot metric to use max_x
+only so the snapshot picks the episode with the furthest rightward reach.
+
+## Exp31 — Snapshot metric: max_x only (drop score component)
+
+**What changed:** The snapshot selection metric changed from
+`episode_last_score + episode_max_x` to just `episode_max_x`.
+
+**Why:** Exp30's post-mortem identified a vulnerability in the current
+snapshot heuristic: if the agent spends an episode collecting coins or
+killing enemies in loops (high score, moderate x), that episode can
+out-score a straight-run episode with higher max_x but less score. Since
+the evaluation metric weights max_x_dist and score equally, but level
+*completion* requires moving rightward, max_x_dist is the better proxy for
+genuine progress. The snapshot should save the model from the episode where
+Mario reached furthest right, not the one where he farmed the most points.
+This is also simpler — one less variable to track (`episode_last_score`
+can be removed).
+
 ## Exp28 — RENDER=False + drop best-snapshot, save final policy
 
 **What changed:** (a) `RENDER = False` (proven Exp26 throughput win); (b)
