@@ -699,6 +699,28 @@ dominate dying-far (shaped ~3168). If training ever reaches the flag (it
 did at least once in Exp19's training run), those experiences will
 generate much larger Q-target updates and will be replayed more effectively.
 
+**Result:** total_reward = 534 (max_x=434, score=100), saved_snapshot
+metric=4140. Much worse than Exp19's 1734. The inflated Q-targets from the
+5000 flag bonus likely destabilize training — the grad clip (norm 10) and
+Huber loss help, but a 5× reward spike changes the scale of ALL Q-values
+for states leading to the flag, causing the value function to become
+overoptimistic and the policy to fail in novel eval states. Also note
+saved_snapshot_metric=4140 < Exp19's 19k, meaning the training run didn't
+even capture as good an episode as the baseline. Reverted.
+
+## Exp34 — Greedy probe 500-step, every 5 episodes
+
+**What changed:** Same greedy-probe snapshot approach as Exp32, but
+`GREEDY_EVAL_STEPS=500` (up from 150). `GREEDY_EVAL_EVERY=5` unchanged.
+
+**Why:** Exp32 got 1095 (score=500 — genuinely good!) but the 150-step
+probe was too short: Mario at x=1434 needs ~300+ env steps (frame-skip=3
+wrapper steps) to reach there. 500 steps lets the greedy policy demonstrate
+its full capability, and the snapshot chosen should be much closer to what
+a full evaluate.py episode will see. Overhead: ~500 steps × ~1.7 sec/step
+overhead (rendering, not compute) → max ~85 seconds total for 5 probes in
+a 10-minute run (~14% of budget). Acceptable.
+
 ## Exp28 — RENDER=False + drop best-snapshot, save final policy
 
 **What changed:** (a) `RENDER = False` (proven Exp26 throughput win); (b)
