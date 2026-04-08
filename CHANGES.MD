@@ -787,6 +787,22 @@ more gradient updates in the 10-minute budget. Exp8 tested FrameSkip=4
 actions per second AND finer control. Risk: more steps per game distance
 covered, but LEARN_START=1000 provides warm-up buffer.
 
+**Result:** total_reward = 426 (max_x=426). GPU thermal cutoff at 477s
+(FrameSkip=2 renders more frames/sec → more GPU heat). Also fewer reward
+signals per episode (finer steps = agent dies faster). Reverted.
+
+## Exp38 — LR 1e-4 → 2.5e-4 (faster convergence in short budget)
+
+**What changed:** `LR = 1e-4` → `LR = 2.5e-4`.
+
+**Why:** Exp24 tried LR=5e-5 (2× slower) and failed with undertrained
+policy. The symmetric direction — higher LR — has not been tested. With
+only ~15k gradient steps in 10 minutes, a higher learning rate could push
+the policy further toward good solutions. Adam already adapts per-parameter,
+and we have grad clip (norm 10) + Huber loss as safety nets. LR=2.5e-4 is
+used in some Atari DQN variants and aligns with the "train fast in short
+budget" principle.
+
 ## Exp28 — RENDER=False + drop best-snapshot, save final policy
 
 **What changed:** (a) `RENDER = False` (proven Exp26 throughput win); (b)
