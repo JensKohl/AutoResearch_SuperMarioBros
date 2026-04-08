@@ -350,3 +350,9 @@ explicitly aligns the training signal with `max_x_dist`, which is exactly what
 evaluate.py scores against for non-flag runs. Also removes a tiny bit of
 variance (revisiting old x no longer injects reward into training updates).
 
+**Result:** `total_reward=535`, `max_x_dist=435`, `score=100`, `flag_get=False`.
+**-1064 vs Exp15 — discarded.** The asymmetry turned out to be important:
+removing the negative reward for moving left also removes the penalty for
+*drifting* left (e.g. while dodging an enemy), so the agent's greedy policy
+becomes less directional. Going back cheaply is a bug, not a feature. Reverted.
+
