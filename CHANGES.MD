@@ -676,6 +676,29 @@ frame_skip = ~2250 raw env steps ≈ 20 seconds per probe, so 5 probes in
 10 minutes = ~100 seconds overhead (~17% of budget). Worth it if snapshot
 quality improves significantly.
 
+**Result:** total_reward = 1095 (max_x=595, score=500), saved_snapshot
+metric=735. Better than pure-luck snapshots (Exp31=310) — score=500 shows
+the greedy policy is genuinely learning. But still below Exp19's 1734. The
+150-step probe is too short to select the same policy that a full-episode
+eval would prefer; the probe underestimates the peak policy. Reverted.
+
+## Exp33 — Flag bonus 1000 → 5000
+
+**What changed:** `DistanceReward.step()` flag bonus: `reward += 1000.0` →
+`reward += 5000.0`.
+
+**Why:** Eval metric is `10000 + (400-t) + score + max_x` for flag-get, vs
+just `score + max_x` otherwise — a 10000 point jump for crossing the line.
+Training uses a flag bonus of 1000, which is much smaller than the eval
+premium. The mismatch means the policy doesn't learn to *strongly prefer*
+finishing: the shaped flag-get reward in training is 1000 + ~200 distance
++ ~score ≈ 1200, while dying at x=1434 with score=300 gives shaped reward
+~1434*2 + 300 = ~3168. So training *prefers dying far* over *reaching the
+flag faster*. Raising to 5000 makes flag-get (shaped ~6200) clearly
+dominate dying-far (shaped ~3168). If training ever reaches the flag (it
+did at least once in Exp19's training run), those experiences will
+generate much larger Q-target updates and will be replayed more effectively.
+
 ## Exp28 — RENDER=False + drop best-snapshot, save final policy
 
 **What changed:** (a) `RENDER = False` (proven Exp26 throughput win); (b)
