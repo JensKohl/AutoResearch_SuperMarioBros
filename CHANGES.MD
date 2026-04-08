@@ -126,3 +126,10 @@ target spikes. N-step propagates reward `N` Bellman backups per update, which is
 exactly what short training budgets need (Rainbow lists n-step as a high-leverage
 addition, <https://arxiv.org/abs/1710.02298>). Starting conservative.
 
+**Result:** `total_reward=1199`, `max_x_dist=899`, `score=300`, `flag_get=False`.
+**+564 over Exp4 — huge win, kept.** `max_x_dist` nearly doubled (435 → 899) and
+score continues to climb. The Exp3 hypothesis was correct: n-step targets diverge
+without gradient control. With norm-10 clipping in place they work as advertised
+and dramatically accelerate credit assignment for this short training budget.
+`peak_vram_mb` unchanged at 115. New foundation for further experiments.
+
