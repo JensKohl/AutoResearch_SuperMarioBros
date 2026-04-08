@@ -356,3 +356,18 @@ removing the negative reward for moving left also removes the penalty for
 *drifting* left (e.g. while dodging an enemy), so the agent's greedy policy
 becomes less directional. Going back cheaply is a bug, not a feature. Reverted.
 
+## Exp18 — Two gradient updates per env step
+
+**What changed:** Added `UPDATES_PER_STEP = 2` and wrapped the training block
+in a loop that samples a fresh batch and updates twice per env step instead of
+once. No other change.
+
+**Why:** The replay buffer already contains far more transitions than any single
+epoch consumes (50k buffer vs. ~20k total updates per 5-min run). We are leaving
+sample efficiency on the table — each env step could drive more gradient
+descent. This is a direct increase in total gradient updates while *also*
+keeping env exploration diversity unchanged (unlike Exp14 which reduced batch).
+Trade-off: wall-clock training time per episode is longer, so fewer env steps
+will fit in the budget — but given each replay batch is independent and GPU
+utilization is already low (115 MB peak), doubling updates is nearly free.
+

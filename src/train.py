@@ -30,6 +30,7 @@ LR = 1e-4
 RENDER = True
 N_STEP = 2  # N-step returns: R = r_t + γ·r_{t+1} + ... , bootstrap with γ^N
 LEARN_START = 1000  # wait until replay buffer has this many transitions before training
+UPDATES_PER_STEP = 2  # how many gradient updates to perform per env step
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 warnings.filterwarnings("ignore")
@@ -262,26 +263,27 @@ def train():
                     best_time = current_time
 
                 if len(memory) >= LEARN_START:
-                    states, actions, rewards, next_states, dones = memory.sample(BATCH_SIZE)
-                    states = torch.FloatTensor(states).to(device) / 255.0
-                    actions = torch.LongTensor(actions).unsqueeze(1).to(device)
-                    rewards = torch.FloatTensor(rewards).to(device)
-                    next_states = torch.FloatTensor(next_states).to(device) / 255.0
-                    dones = torch.FloatTensor(dones).to(device)
+                    for _ in range(UPDATES_PER_STEP):
+                        states, actions, rewards, next_states, dones = memory.sample(BATCH_SIZE)
+                        states = torch.FloatTensor(states).to(device) / 255.0
+                        actions = torch.LongTensor(actions).unsqueeze(1).to(device)
+                        rewards = torch.FloatTensor(rewards).to(device)
+                        next_states = torch.FloatTensor(next_states).to(device) / 255.0
+                        dones = torch.FloatTensor(dones).to(device)
 
-                    q_values = policy_net(states).gather(1, actions)
-                    with torch.no_grad():
-                        # Double DQN: policy net picks action, target net evaluates it.
-                        next_actions = policy_net(next_states).max(1)[1].unsqueeze(1)
-                        next_q_values = target_net(next_states).gather(1, next_actions).squeeze(1)
-                        # N-step: reward is already R = sum γ^i r_i, bootstrap with γ^N
-                        target_q_values = rewards + ((GAMMA ** N_STEP) * next_q_values * (1 - dones))
+                        q_values = policy_net(states).gather(1, actions)
+                        with torch.no_grad():
+                            # Double DQN: policy net picks action, target net evaluates it.
+                            next_actions = policy_net(next_states).max(1)[1].unsqueeze(1)
+                            next_q_values = target_net(next_states).gather(1, next_actions).squeeze(1)
+                            # N-step: reward is already R = sum γ^i r_i, bootstrap with γ^N
+                            target_q_values = rewards + ((GAMMA ** N_STEP) * next_q_values * (1 - dones))
 
-                    loss = nn.SmoothL1Loss()(q_values.squeeze(), target_q_values)
-                    optimizer.zero_grad()
-                    loss.backward()
-                    torch.nn.utils.clip_grad_norm_(policy_net.parameters(), 10.0)
-                    optimizer.step()
+                        loss = nn.SmoothL1Loss()(q_values.squeeze(), target_q_values)
+                        optimizer.zero_grad()
+                        loss.backward()
+                        torch.nn.utils.clip_grad_norm_(policy_net.parameters(), 10.0)
+                        optimizer.step()
 
                 if steps_done % TARGET_UPDATE == 0:
                     target_net.load_state_dict(policy_net.state_dict())
