@@ -174,44 +174,18 @@ class DQN(nn.Module):
         return self.fc(features)
 
 
-# --- Prioritized Experience Replay (proportional, no sum tree) ---
-class PrioritizedReplayBuffer:
-    def __init__(self, capacity, alpha=0.6):
-        self.capacity = capacity
-        self.alpha = alpha
-        self.buffer = []
-        self.priorities = np.zeros(capacity, dtype=np.float32)
-        self.pos = 0
-        self.max_priority = 1.0
+# --- Replay Buffer ---
+class ReplayBuffer:
+    def __init__(self, capacity):
+        self.buffer = deque(maxlen=capacity)
 
     def push(self, state, action, reward, next_state, done):
-        if len(self.buffer) < self.capacity:
-            self.buffer.append((state, action, reward, next_state, done))
-        else:
-            self.buffer[self.pos] = (state, action, reward, next_state, done)
-        # New transitions get max priority so they're seen at least once.
-        self.priorities[self.pos] = self.max_priority
-        self.pos = (self.pos + 1) % self.capacity
+        self.buffer.append((state, action, reward, next_state, done))
 
-    def sample(self, batch_size, beta=0.4):
-        n = len(self.buffer)
-        prios = self.priorities[:n] ** self.alpha
-        probs = prios / prios.sum()
-        indices = np.random.choice(n, batch_size, p=probs)
-        samples = [self.buffer[i] for i in indices]
-        states, actions, rewards, next_states, dones = zip(*samples)
-        # Importance sampling weights, normalised by max for stability.
-        weights = (n * probs[indices]) ** (-beta)
-        weights /= weights.max()
-        return (np.array(states), actions, rewards, np.array(next_states),
-                dones, indices, weights.astype(np.float32))
-
-    def update_priorities(self, indices, td_errors):
-        for idx, err in zip(indices, td_errors):
-            p = float(abs(err)) + 1e-6
-            self.priorities[idx] = p
-            if p > self.max_priority:
-                self.max_priority = p
+    def sample(self, batch_size):
+        batch = random.sample(self.buffer, batch_size)
+        states, actions, rewards, next_states, dones = zip(*batch)
+        return np.array(states), actions, rewards, np.array(next_states), dones
 
     def __len__(self):
         return len(self.buffer)
@@ -233,7 +207,7 @@ def train():
     target_net.eval()
 
     optimizer = optim.Adam(policy_net.parameters(), lr=LR)
-    memory = PrioritizedReplayBuffer(MEMORY_SIZE, alpha=0.6)
+    memory = ReplayBuffer(MEMORY_SIZE)
     steps_done = 0
 
     # N-step transition buffer: holds the last N (s,a,r) tuples
@@ -297,13 +271,12 @@ def train():
                 episode_last_score = current_score
 
                 if len(memory) >= LEARN_START:
-                    states, actions, rewards, next_states, dones, indices, weights = memory.sample(BATCH_SIZE, beta=0.4)
+                    states, actions, rewards, next_states, dones = memory.sample(BATCH_SIZE)
                     states = torch.FloatTensor(states).to(device) / 255.0
                     actions = torch.LongTensor(actions).unsqueeze(1).to(device)
                     rewards = torch.FloatTensor(rewards).to(device)
                     next_states = torch.FloatTensor(next_states).to(device) / 255.0
                     dones = torch.FloatTensor(dones).to(device)
-                    weights_t = torch.FloatTensor(weights).to(device)
 
                     q_values = policy_net(states).gather(1, actions)
                     with torch.no_grad():
@@ -313,18 +286,11 @@ def train():
                         # N-step: reward is already R = sum γ^i r_i, bootstrap with γ^N
                         target_q_values = rewards + ((GAMMA ** N_STEP) * next_q_values * (1 - dones))
 
-                    td_errors = q_values.squeeze() - target_q_values
-                    elementwise_loss = nn.functional.smooth_l1_loss(
-                        q_values.squeeze(), target_q_values, reduction='none'
-                    )
-                    loss = (weights_t * elementwise_loss).mean()
+                    loss = nn.SmoothL1Loss()(q_values.squeeze(), target_q_values)
                     optimizer.zero_grad()
                     loss.backward()
                     torch.nn.utils.clip_grad_norm_(policy_net.parameters(), 10.0)
                     optimizer.step()
-
-                    # Push new priorities back into the buffer
-                    memory.update_priorities(indices, td_errors.detach().abs().cpu().numpy())
 
                 if steps_done % TARGET_UPDATE == 0:
                     target_net.load_state_dict(policy_net.state_dict())

@@ -552,5 +552,16 @@ greedy policy past Exp19's 1734 ceiling. α=0.6 / β=0.4 are the values from
 the original paper (I keep β fixed rather than annealing — too short a
 budget for annealing to matter).
 
+**Result:** `total_reward=307`, `max_x_dist=307`, `score=0`, `flag_get=False`.
+**-1427 vs Exp19 — discarded.** Disappointing. Two likely causes: (1) the
+non-tree-based PER sample step (`np.random.choice` over a 50k-priority array
+each batch, plus `update_priorities` doing a Python-level loop) is meaningfully
+slower per gradient step, and we already know this regime is wall-clock-bound;
+(2) at the start of training, every transition has max priority = 1.0 so
+sampling is effectively uniform until enough TD errors have been seen, which
+means the warmup gets ~no PER benefit. Implementing PER without a sum-tree on
+this small budget probably doesn't pay off — the overhead beats the win.
+Reverted.
+
 
 
