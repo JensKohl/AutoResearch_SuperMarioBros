@@ -431,5 +431,23 @@ score collapsed to 0, dragging total below Exp19. The interpretation is that
 stomps, and the strict greedy filter picks a snapshot that walks far but
 doesn't interact. Per the rule total_reward decides — reverted.
 
+## Exp21 — Soft target updates (τ=0.005)
+
+**What changed:** Replaced the periodic hard target copy
+(`target_net.load_state_dict(policy_net.state_dict())` every 1000 steps) with
+Polyak averaging at every gradient step:
+`target = (1-τ)·target + τ·policy`, with `τ=0.005`. Removed `TARGET_UPDATE`.
+
+**Why:** Hard target copies create discontinuities — the target net is stale
+for 1000 updates, then suddenly jumps to the current policy. Q-targets shift
+abruptly each time, which the value head has to chase. Soft updates (τ=0.005,
+the standard DDPG/SAC value) move the target tiny amount per step, so the
+Q-targets evolve smoothly. Effective "half-life" of the soft update is roughly
+`ln(2)/τ ≈ 140` steps, which is comparable to the old 1000-step hard refresh
+but in a moving-average sense. Cost: a few extra parameter copies per
+gradient step (cheap on this small net). Stability win expected, especially
+because we're already running with grad clipping and n-step returns that benefit
+from a stable bootstrap.
+
 
 
