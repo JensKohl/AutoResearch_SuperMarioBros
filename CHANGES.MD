@@ -1219,3 +1219,21 @@ RENDER=True renders all 1500 × 3 frames. Without rendering, probes run
 peak greedy performance. Using a SEPARATE probe_env means the training env
 state is never disrupted (no more state, info = env.reset() after probe).
 
+**Result:** total_reward = 536 (max_x=436, score=100). WORSE than Exp54 (994).
+The fast probe caused too many PPO updates: with low entropy and 51 training
+rollouts (vs 20 in Exp54), the policy converged to deterministic too early.
+Stochastic max was only x=1520 (vs x=2017 in Exp54) — less exploration.
+Q-head trains on less diverse data → plateaus at x=436 after 3 probes.
+Less is more here: fewer rollouts = better exploration. Reverting.
+
+## Exp56 — PPO: Exp54 base + N_EPOCHS=6 (push past x=594)
+
+**What changed:** N_EPOCHS: 4 → 6 (more PPO updates per rollout)
+
+**Why:** Exp54 reached greedy_x=594 in 4 probes. The next barrier is
+x=594-700. With 6 PPO epochs per rollout, each rollout provides more
+gradient updates without changing the rollout frequency (still ~4 probes
+per training run). More updates per rollout = the policy learns faster
+within each rollout's experience, potentially enabling the Q-head to learn
+Q-values for states past x=594 within the same wall-clock time.
+

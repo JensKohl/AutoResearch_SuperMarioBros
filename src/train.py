@@ -27,7 +27,7 @@ ENTROPY_COEF = 0.005  # very small — encourage policy to peak at correct actio
 LR = 1e-4
 MAX_GRAD_NORM = 0.5
 N_STEPS = 128    # smaller rollout → more frequent updates → faster convergence
-N_EPOCHS = 4     # PPO update epochs per rollout
+N_EPOCHS = 6     # more epochs per rollout → faster learning per data point
 MINI_BATCH = 64  # minibatch size
 RENDER = True
 
@@ -244,14 +244,6 @@ def train():
     env = EnsureChannelFirst(env)
     env = FrameStack(env, k=4)
 
-    # Separate fast env for greedy probes (no rendering = ~10x faster)
-    probe_env = make_env(render=False)
-    probe_env = FrameSkip(probe_env, skip=3)
-    probe_env = DistanceReward(probe_env)
-    probe_env = PreprocessFrame(probe_env)
-    probe_env = EnsureChannelFirst(probe_env)
-    probe_env = FrameStack(probe_env, k=4)
-
     n_actions = env.action_space.n
     net = ActorCritic(n_actions).to(device)
     optimizer = optim.Adam(net.parameters(), lr=LR, eps=1e-5)
@@ -389,21 +381,22 @@ def train():
                     torch.nn.utils.clip_grad_norm_(net.parameters(), MAX_GRAD_NORM)
                     optimizer.step()
 
-            # ---- Greedy probe every 3 rollouts (fast env, no rendering) ----
+            # ---- Greedy probe every 5 rollouts ----
             n_rollouts += 1
-            if n_rollouts % 3 == 0:
+            if n_rollouts % 5 == 0:
                 net.eval()
-                g_state, _ = probe_env.reset()
+                g_state, _ = env.reset()
                 g_max_x = 0
                 with torch.no_grad():
                     for _ in range(1500):
                         g_tensor = torch.FloatTensor(g_state).unsqueeze(0).to(device) / 255.0
                         g_action = net.q_values(g_tensor).argmax(dim=1).item()
-                        g_state, _, g_term, g_trunc, g_info = probe_env.step(g_action)
+                        g_state, _, g_term, g_trunc, g_info = env.step(g_action)
                         g_max_x = max(g_max_x, g_info.get('x_pos', 0))
                         if g_term or g_trunc:
                             break
                 net.train()
+                state, info = env.reset()  # reset training state after probe
                 if g_max_x > best_greedy_x:
                     best_greedy_x = g_max_x
                     best_greedy_snapshot = {k: v.detach().cpu().clone() for k, v in net.state_dict().items()}
@@ -413,7 +406,6 @@ def train():
         pass
     finally:
         env.close()
-        probe_env.close()
         os.makedirs("MODELS", exist_ok=True)
         # Prefer greedy probe snapshot (directly optimizes eval metric);
         # fall back to stochastic snapshot if no greedy probe ran.
