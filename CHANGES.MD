@@ -223,3 +223,11 @@ to trust its own policy. Setting `EPS_DECAY=20000` brings ε at end-of-run to
 `0.02 + 0.98·exp(-1) ≈ 0.38`, and ε at the midpoint to `0.62` — still explorative
 early, but actually exploits late. Expected: richer end-of-run trajectories.
 
+**Result:** `total_reward=315`, `max_x_dist=315`, `score=0`, `flag_get=False`.
+**-1184 vs Exp9 — discarded.** Decaying ε faster forces the agent to commit to
+its policy before the Q-values are any good. Exp9's high-exploration tail
+(ε≈0.68 at end of run) turns out to be a *feature*, not a bug, on this budget —
+it keeps supplying diverse transitions even in the last third of training. The
+rule of thumb "EPS_DECAY ≈ total_steps" from long-run Atari does not apply when
+the network needs the last third of training just as much for data as for exploit.
+
