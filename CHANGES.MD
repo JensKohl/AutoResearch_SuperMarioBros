@@ -1253,3 +1253,19 @@ Q(s,a) = V(s) + A(s,a) and V(s) doesn't depend on action. So using advantages
 as Q-targets is mathematically equivalent for greedy action selection, with
 better training scale properties (O(1) centered at 0).
 
+**Result:** total_reward = 1435 (max_x=435, score=1000). New best! Better
+than Exp54 (994). The advantages-based Q-head learned a score-farming policy
+(1000 points at x=435). Stochastic training reached x=2040. Greedy probe only
+found x=434 though. Keeping — best PPO result so far. Trying more exploration.
+
+## Exp58 — PPO: entropy=0.008 for more exploration past x=434
+
+**What changed:** ENTROPY_COEF: 0.005 → 0.008
+
+**Why:** Exp57 got greedy_x=434 but stochastic max=2040. The policy converges
+quickly with entropy=0.005, and the Q-head may not get enough training data
+for states past x=434 to learn a greedy policy there. Slightly more entropy
+(0.008) keeps the policy exploring past x=434 longer, providing Q-head targets
+for those states. This is halfway between Exp57 (0.005) and the failed Exp52
+(0.01), which hopefully avoids the regression while improving coverage.
+
