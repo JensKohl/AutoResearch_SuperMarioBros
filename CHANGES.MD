@@ -266,3 +266,10 @@ jumping trials for the network to see the pipe-crossing and reinforce it.
 Explicitly: this does *not* speed up decay, it only raises the floor — early
 training is unchanged (ε is well above 0.1 anyway), we only differ at the tail.
 
+**Result:** `total_reward=906`, `max_x_dist=706`, `score=200`, `flag_get=False`.
+**-593 vs Exp9 — discarded.** Bumping the ε floor cost us both distance and
+score. The effect was probably two-fold: (1) more random actions late in
+training means fewer *exploit* episodes the net can learn its own greedy value
+from, and (2) the final saved model carries no benefit from the extra random
+probes since evaluate.py runs it greedily. Net loss. Reverted.
+
