@@ -154,13 +154,7 @@ class DQN(nn.Module):
             nn.Conv2d(64, 64, kernel_size=3, stride=1),
             nn.ReLU()
         )
-        # Dueling heads: V(s) + A(s,a) - mean(A)
-        self.value = nn.Sequential(
-            nn.Linear(3136, 512),
-            nn.ReLU(),
-            nn.Linear(512, 1)
-        )
-        self.advantage = nn.Sequential(
+        self.fc = nn.Sequential(
             nn.Linear(3136, 512),
             nn.ReLU(),
             nn.Linear(512, n_actions)
@@ -169,9 +163,7 @@ class DQN(nn.Module):
     def forward(self, x):
         features = self.conv(x)
         features = features.view(features.size(0), -1)
-        v = self.value(features)
-        a = self.advantage(features)
-        return v + a - a.mean(dim=1, keepdim=True)
+        return self.fc(features)
 
 
 # --- Replay Buffer ---

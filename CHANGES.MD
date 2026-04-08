@@ -102,3 +102,11 @@ the value head generalises across these without having to update every action's
 Q-value independently. Rainbow uses it; it routinely gives a few percent improvement
 on Atari. Small code change, minimal VRAM bump (one extra linear layer of 1 unit).
 
+**Result:** `total_reward=315`, `max_x_dist=315`, `score=0`, `flag_get=False`.
+**-320 vs Exp4 — discarded.** Hypothesis: with only ~5 min of training, the dueling
+architecture has roughly 2x the head parameters (two 3136→512 linears instead of
+one) and can't amortise that cost fast enough. Dueling DQN's wins in the
+literature assume tens of millions of steps; in our tiny budget the extra
+un-trained parameters just add noise. Reverted train.py to Exp4; kept this section
+as permanent history.
+
