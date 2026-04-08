@@ -673,8 +673,7 @@ budget, so any "great training episode" is partly luck. A *greedy* probe
 runs the actual policy (no random actions), giving a direct measurement of
 what evaluate.py will see. 5 episodes between probes × ~150 steps × 3
 frame_skip = ~2250 raw env steps ≈ 20 seconds per probe, so 5 probes in
-10 minutes = ~100 seconds overhead (~17% of budget). Worth it if snapshot
-quality improves significantly.
+10 minutes = ~100 seconds overhead (~17% of budget). Worth it if snapshot quality improves significantly.
 
 **Result:** total_reward = 1095 (max_x=595, score=500), saved_snapshot
 metric=735. Better than pure-luck snapshots (Exp31=310) — score=500 shows
@@ -802,6 +801,22 @@ the policy further toward good solutions. Adam already adapts per-parameter,
 and we have grad clip (norm 10) + Huber loss as safety nets. LR=2.5e-4 is
 used in some Atari DQN variants and aligns with the "train fast in short
 budget" principle.
+
+**Result:** total_reward = 76 (max_x=76). Q-value divergence — even with
+grad clip and Huber loss, 2.5× LR destabilizes value estimates completely.
+Reverted.
+
+## Exp39 — EPS_DECAY 50000 → 80000 (slower exploration decay)
+
+**What changed:** `EPS_DECAY = 50000` → `EPS_DECAY = 80000`.
+
+**Why:** The data shows EPS_DECAY=20k (Exp11) gave 315 (premature
+exploitation) and EPS_DECAY=50k (Exp19) gave our best result 1734. The
+trend: more exploration ≥ better in our short budget. With EPS_DECAY=80k,
+ε after 15k training steps = 0.82 (vs 0.68 with 50k). Keeping ε higher
+for longer means more random episodes that can stumble past x=899 —
+more chances for the lucky snapshot to capture a far-reaching policy
+state. EPS_END=0.02 unchanged.
 
 ## Exp28 — RENDER=False + drop best-snapshot, save final policy
 

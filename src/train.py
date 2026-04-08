@@ -23,10 +23,10 @@ BATCH_SIZE = 128
 GAMMA = 0.99
 EPS_START = 1.0
 EPS_END = 0.02
-EPS_DECAY = 50000
+EPS_DECAY = 80000
 TARGET_UPDATE = 1000
 MEMORY_SIZE = 50000
-LR = 2.5e-4
+LR = 1e-4
 RENDER = True
 N_STEP = 2  # N-step returns: R = r_t + γ·r_{t+1} + ... , bootstrap with γ^N
 LEARN_START = 1000  # wait until replay buffer has this many transitions before training
