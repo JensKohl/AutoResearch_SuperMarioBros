@@ -5,3 +5,5 @@ __pycache__/
 *.pyc
 MODELS/
 run.log
+Runs/
+CHANGES.MD
