@@ -23,7 +23,7 @@ GAMMA = 0.99
 GAE_LAMBDA = 0.95
 CLIP_EPS = 0.2
 VALUE_COEF = 0.5
-ENTROPY_COEF = 0.01  # small entropy — rely on clip for stability
+ENTROPY_COEF = 0.03  # moderate entropy for training exploration; greedy probe picks best snapshot
 LR = 1e-4
 MAX_GRAD_NORM = 0.5
 N_STEPS = 256    # larger rollout for better variance reduction
@@ -253,6 +253,9 @@ def train():
     best_score = 0
     best_time = 0
 
+    best_greedy_x = 0      # greedy probe best max_x
+    n_rollouts = 0         # count rollouts for probe scheduling
+
     state, info = env.reset()
     steps_done = 0
 
@@ -356,6 +359,30 @@ def train():
                     loss.backward()
                     torch.nn.utils.clip_grad_norm_(net.parameters(), MAX_GRAD_NORM)
                     optimizer.step()
+
+            # ---- Greedy probe every 5 rollouts ----
+            n_rollouts += 1
+            if n_rollouts % 5 == 0:
+                net.eval()
+                g_state, _ = env.reset()
+                g_max_x = 0
+                with torch.no_grad():
+                    for _ in range(600):
+                        g_tensor = torch.FloatTensor(g_state).unsqueeze(0).to(device) / 255.0
+                        logits, _ = net.forward(g_tensor)
+                        logits = torch.clamp(logits, -10.0, 10.0)
+                        g_action = logits.argmax(dim=1).item()
+                        g_state, _, g_term, g_trunc, g_info = env.step(g_action)
+                        g_max_x = max(g_max_x, g_info.get('x_pos', 0))
+                        if g_term or g_trunc:
+                            break
+                net.train()
+                state, info = env.reset()  # reset training state after probe
+                if g_max_x > best_greedy_x:
+                    best_greedy_x = g_max_x
+                    best_snapshot_state = {k: v.detach().cpu().clone() for k, v in net.state_dict().items()}
+                    best_snapshot_metric = g_max_x
+                    print(f"  [greedy probe] new best greedy_x={g_max_x}")
 
     except KeyboardInterrupt:
         pass

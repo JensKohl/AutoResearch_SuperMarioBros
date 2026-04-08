@@ -1032,3 +1032,27 @@ tuning — reducing from 0.05 to 0.01 is more standard and avoids
 artificially spreading the distribution. (3) Logit clamping is a cheap
 defensive guard against the specific CUDA crash.
 
+**Result:** total_reward = 314 (max_x=314, score=0). No crash. But
+saved_snapshot_metric=1652 during training yet eval only got x=314. Root
+cause: PPO's stochastic policy explores to x=1652, but the greedy eval
+(argmax of logits) gets stuck at x=314. The PPO policy distribution is
+spread (high entropy), so argmax doesn't represent "best strategy". The
+snapshot selection based on stochastic episode max_x is misaligned with
+greedy eval. Need to select snapshots based on greedy performance.
+
+## Exp47 — PPO greedy-probe snapshot selection
+
+**What changed:**
+- `ENTROPY_COEF`: 0.01 → 0.03 (moderate: enough exploration for training, not so much it spreads policy too thin)
+- Added greedy probe every 5 rollouts: runs up to 600 greedy steps (argmax of logits), records max_x, saves snapshot if best greedy_x improved
+- Snapshot selection now based on greedy max_x (what eval measures), not stochastic episode max_x
+
+**Why:** Exp46 diagnosed the mismatch: training reaches x=1652 stochastically
+but eval (greedy argmax) only gets x=314. The snapshot was saved on the best
+*stochastic* episode, but eval uses *greedy* (argmax) policy. By probing every
+5 rollouts with greedy actions and saving the best greedy checkpoint, we
+directly optimize for the eval metric. Each greedy probe is 600 steps
+(≈1 Mario life), so overhead is ~5 probes per training minute = moderate cost.
+Reference: this approach is standard in PPO literature as "greedy evaluation
+checkpoint selection".
+
