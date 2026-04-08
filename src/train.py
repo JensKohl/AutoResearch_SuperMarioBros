@@ -27,7 +27,7 @@ EPS_DECAY = 50000
 TARGET_UPDATE = 1000
 MEMORY_SIZE = 50000
 LR = 1e-4
-RENDER = False
+RENDER = True
 N_STEP = 2  # N-step returns: R = r_t + γ·r_{t+1} + ... , bootstrap with γ^N
 LEARN_START = 1000  # wait until replay buffer has this many transitions before training
 
@@ -309,12 +309,10 @@ def train():
                     break
 
             total_rewards.append(episode_reward)
-            # Snapshot the model after any episode (past the first 10) that
-            # beats our best eval-aligned proxy (score + max_x_dist). Skipping
-            # the first 10 episodes filters out very-early lucky outliers
-            # whose underlying greedy policy can't reproduce them.
+            # Snapshot the model after any episode that beats our best
+            # eval-aligned proxy (score + max_x_dist), matching evaluate.py.
             episode_metric = episode_last_score + episode_max_x
-            if len(total_rewards) > 10 and episode_metric > best_snapshot_metric:
+            if episode_metric > best_snapshot_metric:
                 best_snapshot_metric = episode_metric
                 best_snapshot_state = {k: v.detach().cpu().clone() for k, v in policy_net.state_dict().items()}
             gpu_temp = get_gpu_temp()

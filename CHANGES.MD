@@ -604,5 +604,15 @@ result is essentially noise. After 10 episodes the policy has at least had
 greedy capability. Cheap, addresses the observed failure mode of Exp26
 directly.
 
+**Result:** total_reward = 998 (max_x=898, score=100, no flag),
+saved_snapshot_metric=3169. Worse than Exp19's 1734. Skipping the first 10
+episodes was not enough — the snapshot heuristic is still picking lucky
+ε-greedy outliers at higher episode counts. The fundamental issue is that
+*any* episode-best metric is biased upward by ε-noise, and more episodes
+amplifies that bias regardless of which episodes you exclude. Reverted.
+Next: try the opposite — RENDER=False but save the *final* model (drop the
+snapshot scheme entirely) to test whether the doubled training budget alone
+beats Exp19.
+
 
 
