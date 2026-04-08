@@ -257,6 +257,7 @@ def train():
                     loss = nn.SmoothL1Loss()(q_values.squeeze(), target_q_values)
                     optimizer.zero_grad()
                     loss.backward()
+                    torch.nn.utils.clip_grad_norm_(policy_net.parameters(), 10.0)
                     optimizer.step()
 
                 if steps_done % TARGET_UPDATE == 0:

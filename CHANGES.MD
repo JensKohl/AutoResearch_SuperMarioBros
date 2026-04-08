@@ -66,3 +66,18 @@ tripling the TD-target magnitude, which destabilised the value estimates given t
 cleaner retry would either (a) normalise the distance reward, or (b) try `n=2`
 first, or (c) couple n-step with gradient clipping. Reverted train.py to Exp2.
 
+## Exp4 — Gradient clipping (norm 10)
+
+**What changed:** Added `torch.nn.utils.clip_grad_norm_(policy_net.parameters(), 10.0)`
+between `loss.backward()` and `optimizer.step()`. One line.
+
+**Why:** Q-learning targets can spike (sparse big rewards like the +1000 flag bonus
+or the +2/pixel distance shaping). Without gradient clipping, a single high-magnitude
+TD error can push parameters far enough to destabilise the policy for many subsequent
+updates. Gradient norm clipping is one of the standard ingredients in Rainbow
+(Hessel et al. 2017, <https://arxiv.org/abs/1710.02298>) and almost every modern
+DQN implementation. norm=10 is the value used in the original Rainbow code and is
+gentle enough that it should not bottleneck learning while still cutting off
+pathological updates. It also lays the groundwork for retrying n-step returns later
+(Exp3 hypothesis: noisy n-step targets caused divergence — clipping should help).
+
