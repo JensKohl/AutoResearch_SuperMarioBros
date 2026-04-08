@@ -21,12 +21,12 @@ from src.constants import TIME_BUDGET, MAX_EPISODE_STEPS, PRO_MOVEMENT
 # PPO Hyperparameters
 GAMMA = 0.99
 GAE_LAMBDA = 0.95
-CLIP_EPS = 0.1
+CLIP_EPS = 0.2
 VALUE_COEF = 0.5
-ENTROPY_COEF = 0.05  # higher entropy bonus prevents policy collapse
-LR = 2.5e-4
+ENTROPY_COEF = 0.01  # small entropy — rely on clip for stability
+LR = 1e-4
 MAX_GRAD_NORM = 0.5
-N_STEPS = 128    # env steps per rollout
+N_STEPS = 256    # larger rollout for better variance reduction
 N_EPOCHS = 4     # PPO update epochs per rollout
 MINI_BATCH = 64  # minibatch size
 RENDER = True
@@ -197,6 +197,7 @@ class ActorCritic(nn.Module):
     def act(self, x):
         """Sample action and return (action, log_prob, value)."""
         logits, value = self.forward(x)
+        logits = torch.clamp(logits, -10.0, 10.0)
         dist = torch.distributions.Categorical(logits=logits)
         action = dist.sample()
         return action.item(), dist.log_prob(action), value.squeeze(-1)
@@ -204,6 +205,7 @@ class ActorCritic(nn.Module):
     def evaluate(self, states, actions):
         """For PPO update: returns log_probs, values, entropy."""
         logits, values = self.forward(states)
+        logits = torch.clamp(logits, -10.0, 10.0)
         dist = torch.distributions.Categorical(logits=logits)
         log_probs = dist.log_prob(actions)
         entropy = dist.entropy()

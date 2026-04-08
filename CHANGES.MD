@@ -1006,3 +1006,29 @@ The proximal constraint prevents destructive updates. The entropy bonus
 maintains exploration throughout training without epsilon tuning. PPO is
 known to work well on Mario-style games in the literature.
 
+**Result:** total_reward = 40 (max_x=40, score=0). Training crashed with
+CUDA device-side assert in PPO update loop — numerical instability from
+policy collapse causing extreme logits. saved_snapshot_metric was 2019
+during training — PPO CAN reach x=2019, but the policy collapses and the
+saved model is unusable. ENTROPY_COEF=0.05 insufficient to prevent
+collapse. Continuing PPO with fixes in Exp46.
+
+## Exp46 — PPO stabilization: logit clamping + lower LR + larger rollout
+
+**What changed:**
+- `ENTROPY_COEF`: 0.05 → 0.01 (standard PPO value; rely on clipping not entropy to prevent collapse)
+- `LR`: 2.5e-4 → 1e-4 (more conservative updates)
+- `CLIP_EPS`: 0.1 → 0.2 (standard PPO epsilon)
+- `N_STEPS`: 128 → 256 (larger rollout → lower variance advantage estimates)
+- Logit clamping to [-10, 10] in `act()` and `evaluate()` (prevents NaN/Inf in log_prob)
+
+**Why:** Exp45 showed PPO can reach x=2019 during training (no DQN variant
+got past x=1434), but policy collapse made the saved model useless. The
+CUDA assert was caused by extreme logits → NaN in log_prob → invalid
+gradient → device-side assert. Root causes: (1) LR=2.5e-4 too high for
+PPO — standard PPO on Atari uses 2.5e-4 but with annealing; without
+annealing it's too aggressive for 10-minute training. (2) ENTROPY_COEF
+tuning — reducing from 0.05 to 0.01 is more standard and avoids
+artificially spreading the distribution. (3) Logit clamping is a cheap
+defensive guard against the specific CUDA crash.
+
