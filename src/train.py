@@ -27,7 +27,7 @@ ENTROPY_COEF = 0.005  # very small — encourage policy to peak at correct actio
 LR = 1e-4
 MAX_GRAD_NORM = 0.5
 N_STEPS = 128    # smaller rollout → more frequent updates → faster convergence
-N_EPOCHS = 6     # more epochs per rollout → faster learning per data point
+N_EPOCHS = 4     # PPO update epochs per rollout
 MINI_BATCH = 64  # minibatch size
 RENDER = True
 
@@ -367,13 +367,13 @@ def train():
                     value_loss = VALUE_COEF * F.mse_loss(values, mb_returns.detach())
                     entropy_loss = -ENTROPY_COEF * entropy.mean()
                     # Q-head: fit per-action Q-values to normalized PPO returns
-                    # Detached features → Q-head trains independently, no PPO interference
+                    # Q-head targets = advantages (normalized at rollout level, O(1) scale)
+                    # argmax(A(s,a)) == argmax(Q(s,a)) so this is equivalent for greedy eval
                     with torch.no_grad():
                         q_feats = net.fc(net.conv(mb_states).view(len(mb_states), -1))
                     q_pred = net.q_head(q_feats)
-                    q_targets = (mb_returns - mb_returns.mean()) / (mb_returns.std() + 1e-8)
                     q_loss = F.mse_loss(q_pred.gather(1, mb_actions.unsqueeze(1)).squeeze(1),
-                                        q_targets.detach())
+                                        mb_advantages.detach())
 
                     loss = policy_loss + value_loss + entropy_loss + q_loss
                     optimizer.zero_grad()

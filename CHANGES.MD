@@ -1237,3 +1237,19 @@ per training run). More updates per rollout = the policy learns faster
 within each rollout's experience, potentially enabling the Q-head to learn
 Q-values for states past x=594 within the same wall-clock time.
 
+**Result:** total_reward = 296 (max_x=296, score=0). N_EPOCHS=6 destabilized
+PPO — classic over-updating with on-policy data. Policy collapsed, stochastic
+training at x=1959 but greedy probe only found x=296. N_EPOCHS=4 is the limit.
+
+## Exp57 — PPO Q-head: use advantages as Q-head targets
+
+**What changed:** Q-head targets changed from `(returns-mean)/std` to `advantages` (already PPO-normalized at rollout level, scale O(1), computed before the minibatch loop)
+
+**Why:** Returns normalized per-minibatch produce inconsistent Q-targets
+across rollouts. Advantages are normalized at the ROLLOUT level (not
+minibatch), so they have a consistent scale across all minibatches of the
+same rollout. More importantly: `argmax(A(s,a)) == argmax(Q(s,a))` because
+Q(s,a) = V(s) + A(s,a) and V(s) doesn't depend on action. So using advantages
+as Q-targets is mathematically equivalent for greedy action selection, with
+better training scale properties (O(1) centered at 0).
+
