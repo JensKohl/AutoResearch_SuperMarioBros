@@ -172,3 +172,17 @@ lookahead per update (higher N) or fewer updates per game second (higher skip)
 breaks it. Reverted to skip=3. Next ideas should stay within that envelope —
 e.g. reward shaping, exploration schedule, or prioritized replay.
 
+## Exp9 — Learning warmup (LEARN_START=1000)
+
+**What changed:** Training updates no longer begin as soon as the replay buffer
+has more than `BATCH_SIZE` (128) transitions — instead they wait until it has
+1000. No other change.
+
+**Why:** Starting to train on a buffer of 128 samples means the first few hundred
+updates are effectively memorising a tiny, highly correlated window of mostly-
+random-policy behaviour, with the net drifting toward bad Q-estimates before the
+exploration has had time to produce any diversity. The canonical DQN setup
+(Mnih et al. 2015) uses a warmup of 50k steps; we'd burn our whole budget on that,
+but 1000 is a reasonable compromise — it's only ~5-10% of a full run and ensures
+the first batch is drawn from a non-trivially diverse pool. Cheap to try.
+

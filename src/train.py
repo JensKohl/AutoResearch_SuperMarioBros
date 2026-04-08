@@ -29,6 +29,7 @@ MEMORY_SIZE = 50000
 LR = 1e-4
 RENDER = True
 N_STEP = 2  # N-step returns: R = r_t + γ·r_{t+1} + ... , bootstrap with γ^N
+LEARN_START = 1000  # wait until replay buffer has this many transitions before training
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 warnings.filterwarnings("ignore")
@@ -254,7 +255,7 @@ def train():
                     best_score = current_score
                     best_time = current_time
 
-                if len(memory) > BATCH_SIZE:
+                if len(memory) >= LEARN_START:
                     states, actions, rewards, next_states, dones = memory.sample(BATCH_SIZE)
                     states = torch.FloatTensor(states).to(device) / 255.0
                     actions = torch.LongTensor(actions).unsqueeze(1).to(device)
