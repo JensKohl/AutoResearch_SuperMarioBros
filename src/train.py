@@ -161,6 +161,12 @@ class DQN(nn.Module):
             nn.ReLU(),
             nn.Linear(512, n_actions)
         )
+        # Kaiming init for ReLU conv/fc layers
+        for m in self.modules():
+            if isinstance(m, (nn.Conv2d, nn.Linear)):
+                nn.init.kaiming_normal_(m.weight, nonlinearity='relu')
+                if m.bias is not None:
+                    nn.init.zeros_(m.bias)
 
     def forward(self, x):
         features = self.conv(x)

@@ -291,3 +291,19 @@ a pure throughput gain.
 tells me: we are *not* purely update-bound — gradient quality matters too, and
 64 is too noisy for the net to track a moving target.
 
+## Exp15 — Kaiming (He) weight initialization
+
+**What changed:** Added an explicit Kaiming normal init for all `Conv2d` and
+`Linear` layers, with biases zeroed. PyTorch's default for `Conv2d` / `Linear`
+is uniform with `fan_in` scaling (Kaiming uniform for the weights). Kaiming
+*normal* with `nonlinearity='relu'` (rather than the default `leaky_relu`
+assumption) is the textbook init for ReLU conv nets (He et al. 2015,
+<https://arxiv.org/abs/1502.01852>) and preserves signal variance more cleanly
+across the forward pass.
+
+**Why:** With 5 min of training we only get ~20k updates. Any improvement in
+early-gradient quality compounds over the budget. This is a zero-cost change at
+runtime (the init runs once), has no interaction with the update rate (so it
+shouldn't hit the sharp-edge failure mode the last few experiments showed), and
+is completely orthogonal to everything else in Exp9's stack.
+
