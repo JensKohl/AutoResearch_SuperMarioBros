@@ -333,3 +333,20 @@ bootstrap target — effectively a drag on the value estimates we're trying to
 grow. Weight decay plays less well with TD learning than with supervised
 learning; this is a known issue in the literature. Reverted.
 
+## Exp17 — Frontier-only distance reward
+
+**What changed:** `DistanceReward` now only gives forward-progress reward when
+`x_pos` exceeds the episode's previous maximum, rather than rewarding every
+positive step-delta. Going back and forth yields no net reward. The tracking
+field `curr_x` was renamed to `max_x` to reflect its new monotonic meaning.
+
+**Why:** The previous shaping rewarded `(x_pos - curr_x) * 2.0`, which means an
+agent that oscillates forward-and-back-and-forward can farm positive reward on
+each forward step and pay the negative cost on each backward step. In practice
+the two should roughly cancel, but TD learning treats them asymmetrically — the
+positive and negative rewards end up in different transitions and the Q-values
+can learn to pursue oscillation. Rewarding *only* new-frontier pixels
+explicitly aligns the training signal with `max_x_dist`, which is exactly what
+evaluate.py scores against for non-flag runs. Also removes a tiny bit of
+variance (revisiting old x no longer injects reward into training updates).
+
