@@ -143,3 +143,12 @@ originally tried n=3 and failed, but that was before gradient clipping; the
 clipping (Exp4) should now absorb the larger target magnitudes. Worth ~30 seconds
 to find out.
 
+**Result:** `total_reward=314`, `max_x_dist=314`, `score=0`, `flag_get=False`.
+**-885 vs Exp6 — discarded.** Fascinating: even with gradient clipping, n=3
+produced a nearly identical result to the original Exp3 (315 then, 314 now). This
+is not clipping's fault — clipping is working. It looks like n=3 simply pushes
+the off-policy bias past a tipping point on this environment: at frame-skip=3,
+an n-step return spans ~9 raw frames of action, during which the policy can
+change enough that the trailing rewards no longer reflect what the current Q
+thinks it would do. n=2 is a sweet spot. Reverted train.py to Exp6 (N_STEP=2).
+
