@@ -614,6 +614,19 @@ Next: try the opposite — RENDER=False but save the *final* model (drop the
 snapshot scheme entirely) to test whether the doubled training budget alone
 beats Exp19.
 
+## Exp30 — Wider FC layer (512→1024)
+
+**What changed:** The fully-connected head of the DQN was widened from
+`Linear(3136, 512)` to `Linear(3136, 1024)`.
+
+**Why:** Exp19 reached x=1434 in greedy eval but stalled there. The conv
+layers (32→64→64 channels) are the standard Atari DQN architecture, which
+is known to generalise to many games. The bottleneck is more likely in the
+FC layer that maps 3136 conv features to action Q-values. Doubling it from
+512 to 1024 gives the network twice as many hidden units to represent
+policy distinctions needed in later parts of the level. The VRAM increase
+is minimal (an extra ~6M parameters on top of the existing ~1.7M).
+
 ## Exp28 — RENDER=False + drop best-snapshot, save final policy
 
 **What changed:** (a) `RENDER = False` (proven Exp26 throughput win); (b)
