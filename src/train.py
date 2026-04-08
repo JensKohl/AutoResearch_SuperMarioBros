@@ -23,7 +23,7 @@ GAMMA = 0.99
 GAE_LAMBDA = 0.95
 CLIP_EPS = 0.2
 VALUE_COEF = 0.5
-ENTROPY_COEF = 0.005  # very small — encourage policy to peak at correct actions
+ENTROPY_COEF = 0.01   # moderate: enough exploration while Q-head learns good greedy policy
 LR = 1e-4
 MAX_GRAD_NORM = 0.5
 N_STEPS = 128    # smaller rollout → more frequent updates → faster convergence
@@ -388,7 +388,7 @@ def train():
                 g_state, _ = env.reset()
                 g_max_x = 0
                 with torch.no_grad():
-                    for _ in range(600):
+                    for _ in range(1500):
                         g_tensor = torch.FloatTensor(g_state).unsqueeze(0).to(device) / 255.0
                         g_action = net.q_values(g_tensor).argmax(dim=1).item()
                         g_state, _, g_term, g_trunc, g_info = env.step(g_action)

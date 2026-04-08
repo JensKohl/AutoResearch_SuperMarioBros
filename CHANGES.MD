@@ -1143,3 +1143,23 @@ training. By detaching features, the Q-head trains as a separate linear probe
 on top of PPO features — no interference. Normalizing targets fixes scale while
 preserving the relative ordering that matters for argmax(Q).
 
+**Result:** total_reward = 723 (max_x=723, score=0). Big improvement!
+Greedy Q-head cleared the first pit (x=314 wall broken) and reached x=723.
+Stochastic training reached x=1125. The detached Q-head approach works.
+Still below DQN best of 1734. Need better exploration (more stochastic
+reach) and longer greedy probes. Keeping this — new best with PPO.
+
+## Exp52 — PPO Q-head: more exploration + longer greedy probe
+
+**What changed:**
+- `ENTROPY_COEF`: 0.005 → 0.01 (more exploration for stochastic policy → deeper Q-value data)
+- Greedy probe steps: 600 → 1500 (full episode length, don't cut off early)
+
+**Why:** In Exp51, stochastic training only reached x=1125 (vs Exp50's
+x=2022). The lower entropy (0.005) likely caused premature convergence,
+reducing exploratory reach. With ENTROPY_COEF=0.01 we get more diverse
+stochastic episodes that reach further, providing richer Q-value targets
+for the Q-head. Also, the greedy probe was cut at 600 steps — if Mario
+gets to x=723 it's already past 600 steps, so extending to 1500 lets
+us capture the full episode and find the true greedy max_x.
+
