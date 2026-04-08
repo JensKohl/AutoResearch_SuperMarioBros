@@ -24,7 +24,7 @@ GAMMA = 0.99
 EPS_START = 1.0
 EPS_END = 0.02
 EPS_DECAY = 50000
-TARGET_UPDATE = 2000
+TARGET_UPDATE = 1000
 MEMORY_SIZE = 50000
 LR = 1e-4
 RENDER = True
@@ -206,7 +206,7 @@ def train():
     target_net.load_state_dict(policy_net.state_dict())
     target_net.eval()
 
-    optimizer = optim.Adam(policy_net.parameters(), lr=LR)
+    optimizer = optim.Adam(policy_net.parameters(), lr=LR, amsgrad=True)
     memory = ReplayBuffer(MEMORY_SIZE)
     steps_done = 0
 

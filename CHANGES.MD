@@ -925,4 +925,18 @@ may cause instability (moving target updated too often). Doubling to 2000
 gives longer stable target windows, potentially allowing the policy to
 converge to a better fixed-target solution before the next update.
 
+**Result:** total_reward = 595 (max_x=595, score=0). No improvement.
+Longer target stability doesn't help in our short budget. Reverted.
+
+## Exp42 — AMSGrad Adam variant
+
+**What changed:** `optim.Adam(params, lr=LR)` → `optim.Adam(params, lr=LR, amsgrad=True)`.
+
+**Why:** AMSGrad (Reddi et al. 2018) uses the running maximum of second
+moments in the denominator instead of the exponential moving average.
+This provides better convergence guarantees in non-convex settings by
+preventing the adaptive learning rate from increasing, which can cause
+oscillations. In short-budget RL training, this stability could help the
+policy converge more reliably to good solutions. One flag, zero risk.
+
 
