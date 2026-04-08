@@ -721,6 +721,35 @@ a full evaluate.py episode will see. Overhead: ~500 steps × ~1.7 sec/step
 overhead (rendering, not compute) → max ~85 seconds total for 5 probes in
 a 10-minute run (~14% of budget). Acceptable.
 
+**Result:** total_reward = 1499 (max_x=899, score=600), saved_snapshot
+metric=924. Score=600 is excellent and consistent. But max_x stuck at 899
+(the pre-Exp19 wall). The greedy probe approach produces a reliable policy
+that consistently reaches x=899 with good score, but cannot break past the
+wall. The issue: without lucky ε-greedy exploration, the greedy probe only
+captures what the policy can do deterministically — and in 10 minutes of
+training, the deterministic policy plateaus at x=899. The ε-greedy
+"lucky" snapshot in Exp19 got past x=899 to x=1434 because it occasionally
+stumbled past the obstacle via random actions, and those weights happened
+to be useful. Reverted.
+
+## Exp35 — Frontier bonus for new max-x positions
+
+**What changed:** `DistanceReward` gains a `global_max_x` tracker that
+persists across episodes. Each time Mario reaches a new global maximum
+x position, he gets an extra `(x_pos - global_max_x) * 1.0` bonus on top
+of the standard `(dx) * 2.0` distance reward. The global max is then updated.
+
+**Why:** Greedy probe (Exp34) showed the deterministic policy plateaus at
+x=899 with 10-minute training. The x=899→x=1434 region is visited less
+than the x=0→899 region because the agent starts at x=0 every episode and
+needs to survive to x=899 first. The frontier bonus directly incentivizes
+the agent to push into unexplored territory: the first time each x > 899
+is reached (across all training episodes), it pays an extra reward. This
+is additive on top of the existing distance reward (unlike Exp17 which
+replaced it), so it shouldn't destabilize earlier learning. The global_max_x
+resets only at class construction (not at env.reset) so it accumulates
+across episodes.
+
 ## Exp28 — RENDER=False + drop best-snapshot, save final policy
 
 **What changed:** (a) `RENDER = False` (proven Exp26 throughput win); (b)
