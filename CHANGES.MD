@@ -152,3 +152,16 @@ an n-step return spans ~9 raw frames of action, during which the policy can
 change enough that the trailing rewards no longer reflect what the current Q
 thinks it would do. n=2 is a sweet spot. Reverted train.py to Exp6 (N_STEP=2).
 
+## Exp8 — Frame skip 3 → 4
+
+**What changed:** `FrameSkip(env, skip=3)` → `FrameSkip(env, skip=4)`. One char.
+
+**Why:** skip=4 is the canonical Atari DQN value (Mnih et al. 2013/2015). Every
+update now effectively sees 33% more game progress per step, so for a fixed
+training budget the agent experiences more of the level. Mario specifically
+benefits from longer skips because its useful actions (run, jump-right) are
+naturally held across many frames. Trade-off: reaction time drops slightly. Also
+note that with N_STEP=2 each replay transition now spans 2·4=8 raw frames of
+lookahead versus 2·3=6 — slightly more aggressive credit assignment, but well
+within what Exp6 showed is stable.
+
