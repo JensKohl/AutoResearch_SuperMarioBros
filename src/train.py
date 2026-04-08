@@ -247,7 +247,6 @@ def train():
     n_actions = env.action_space.n
     net = ActorCritic(n_actions).to(device)
     optimizer = optim.Adam(net.parameters(), lr=LR, eps=1e-5)
-    q_optimizer = optim.Adam(net.q_head.parameters(), lr=1e-3)  # dedicated Q-head optimizer
 
     start_time = time.time()
     total_rewards = []
@@ -381,24 +380,6 @@ def train():
                     loss.backward()
                     torch.nn.utils.clip_grad_norm_(net.parameters(), MAX_GRAD_NORM)
                     optimizer.step()
-
-            # ---- Extra Q-head updates (10 passes, separate optimizer) ----
-            norm_returns = (returns - returns.mean()) / (returns.std() + 1e-8)
-            q_idx = np.arange(N_STEPS)
-            for _ in range(10):
-                np.random.shuffle(q_idx)
-                for start in range(0, N_STEPS, MINI_BATCH):
-                    mb_q = q_idx[start:start + MINI_BATCH]
-                    with torch.no_grad():
-                        q_feats = net.fc(net.conv(states_t[mb_q]).view(len(mb_q), -1))
-                    q_pred = net.q_head(q_feats)
-                    q_loss = F.mse_loss(
-                        q_pred.gather(1, actions_t[mb_q].unsqueeze(1)).squeeze(1),
-                        norm_returns[mb_q].detach()
-                    )
-                    q_optimizer.zero_grad()
-                    q_loss.backward()
-                    q_optimizer.step()
 
             # ---- Greedy probe every 5 rollouts ----
             n_rollouts += 1

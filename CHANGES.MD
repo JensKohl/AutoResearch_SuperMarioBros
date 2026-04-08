@@ -1183,3 +1183,20 @@ surface much faster. Features remain detached so there's no PPO
 interference. 10 extra passes × 2 minibatches = 20 extra Q-head updates
 per rollout — enough for a linear layer to converge on normalized targets.
 
+**Result:** total_reward = 435 (max_x=435, score=0). WORSE than Exp51 (723).
+The extra Q-head passes with lr=1e-3 overfit per-rollout: each rollout's
+normalized targets overwrite the previous ones (normalized mean changes each
+rollout), so Q-head never builds stable long-term Q-values. Exp51's slow
+lr=1e-4 accidentally provided a useful averaging effect. Reverting extras.
+
+## Exp54 — Exact Exp51 config + 1500-step probe (minimal safe change)
+
+**What changed:**
+- Reverted all Exp53 changes (no extra Q-head passes, no dedicated optimizer)
+- Greedy probe steps only change: 600 → 1500
+
+**Why:** Exp51 (600 steps, greedy_x=723) achieved the current best. With
+600 steps, the probe might be truncating early and missing further progress.
+Extending to 1500 (full episode budget) lets the greedy policy run to
+natural termination. This is the minimal safe change from the working config.
+
