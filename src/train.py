@@ -24,7 +24,7 @@ GAMMA = 0.99
 EPS_START = 1.0
 EPS_END = 0.02
 EPS_DECAY = 50000
-TARGET_TAU = 0.005  # soft target update coefficient (per gradient step)
+TARGET_UPDATE = 1000
 MEMORY_SIZE = 50000
 LR = 1e-4
 RENDER = True
@@ -292,10 +292,8 @@ def train():
                     torch.nn.utils.clip_grad_norm_(policy_net.parameters(), 10.0)
                     optimizer.step()
 
-                    # Soft target update (Polyak averaging)
-                    with torch.no_grad():
-                        for tp, p in zip(target_net.parameters(), policy_net.parameters()):
-                            tp.data.mul_(1.0 - TARGET_TAU).add_(p.data, alpha=TARGET_TAU)
+                if steps_done % TARGET_UPDATE == 0:
+                    target_net.load_state_dict(policy_net.state_dict())
 
                 if done or (time.time() - start_time >= TIME_BUDGET):
                     # Flush the remaining partial n-step windows at episode end

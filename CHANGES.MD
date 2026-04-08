@@ -449,5 +449,13 @@ gradient step (cheap on this small net). Stability win expected, especially
 because we're already running with grad clipping and n-step returns that benefit
 from a stable bootstrap.
 
+**Result:** `total_reward=594`, `max_x_dist=594`, `score=0`, `flag_get=False`.
+**-1140 vs Exp19 — discarded.** `saved_snapshot_metric=20555` (training again
+finished the level once), but the greedy snapshot collapses. Hypothesis: soft
+updates make the target net move *with* the policy almost in lockstep at this
+high `τ`, which weakens the "fixed-target" stabilization that vanilla DQN
+relies on. With our small budget and no PER, the target needs to be staler than
+this. Sticking with hard 1000-step copies. Reverted.
+
 
 
