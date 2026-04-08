@@ -928,6 +928,24 @@ converge to a better fixed-target solution before the next update.
 **Result:** total_reward = 595 (max_x=595, score=0). No improvement.
 Longer target stability doesn't help in our short budget. Reverted.
 
+## Exp43 — Dueling DQN (re-tested with full modern stack)
+
+**What changed:** DQN architecture gets dueling streams. After the 3-conv
+backbone, instead of `Linear(3136,512)→Linear(512,n_actions)`, we now have:
+- Value stream: `Linear(3136,512)→ReLU→Linear(512,1)`
+- Advantage stream: `Linear(3136,512)→ReLU→Linear(512,n_actions)`
+- Q(s,a) = V(s) + A(s,a) - mean_a[A(s,a)]
+Both streams have the same parameter count as the original FC head combined.
+
+**Why:** Exp5 tried Dueling DQN and failed ("head param doubling hurts
+small-budget training") but that was before Kaiming init, N-step returns,
+LEARN_START warmup, and grad clipping. With the current improved stack, the
+dueling architecture may work better. The separation of value V(s) from
+advantage A(s,a) helps when actions have similar Q-values (common in Mario
+when the agent is confident about its position). The value stream can learn
+a clean state-dependent signal ("how far right is Mario") without conflating
+it with action selection.
+
 ## Exp42 — AMSGrad Adam variant
 
 **What changed:** `optim.Adam(params, lr=LR)` → `optim.Adam(params, lr=LR, amsgrad=True)`.

@@ -143,7 +143,7 @@ class FrameSkip(gym.Wrapper):
         return obs, total_reward, terminated, truncated, info
 
 
-# --- DQN Model ---
+# --- Dueling DQN Model ---
 class DQN(nn.Module):
     def __init__(self, n_actions):
         super(DQN, self).__init__()
@@ -156,12 +156,10 @@ class DQN(nn.Module):
             nn.Conv2d(64, 64, kernel_size=3, stride=1),
             nn.ReLU()
         )
-        self.fc = nn.Sequential(
-            nn.Linear(3136, 512),
-            nn.ReLU(),
-            nn.Linear(512, n_actions)
-        )
-        # Kaiming init for ReLU conv/fc layers
+        # Dueling streams: value (V) and advantage (A), Q = V + A - mean(A)
+        self.value = nn.Sequential(nn.Linear(3136, 512), nn.ReLU(), nn.Linear(512, 1))
+        self.advantage = nn.Sequential(nn.Linear(3136, 512), nn.ReLU(), nn.Linear(512, n_actions))
+        # Kaiming init for ReLU layers
         for m in self.modules():
             if isinstance(m, (nn.Conv2d, nn.Linear)):
                 nn.init.kaiming_normal_(m.weight, nonlinearity='relu')
@@ -171,7 +169,9 @@ class DQN(nn.Module):
     def forward(self, x):
         features = self.conv(x)
         features = features.view(features.size(0), -1)
-        return self.fc(features)
+        v = self.value(features)
+        a = self.advantage(features)
+        return v + (a - a.mean(dim=1, keepdim=True))
 
 
 # --- Replay Buffer ---
@@ -206,7 +206,7 @@ def train():
     target_net.load_state_dict(policy_net.state_dict())
     target_net.eval()
 
-    optimizer = optim.Adam(policy_net.parameters(), lr=LR, amsgrad=True)
+    optimizer = optim.Adam(policy_net.parameters(), lr=LR)
     memory = ReplayBuffer(MEMORY_SIZE)
     steps_done = 0
 
