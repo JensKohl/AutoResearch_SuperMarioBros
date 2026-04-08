@@ -614,6 +614,77 @@ Next: try the opposite — RENDER=False but save the *final* model (drop the
 snapshot scheme entirely) to test whether the doubled training budget alone
 beats Exp19.
 
+## Exp28 — RENDER=False + drop best-snapshot, save final policy
+
+**What changed:** (a) `RENDER = False` (proven Exp26 throughput win); (b)
+removed the entire best-snapshot selection logic — `MODELS/model.pt` is now
+just `policy_net.state_dict()` at end of training. Also dropped now-unused
+`episode_max_x` / `episode_last_score` / `best_snapshot_metric` /
+`best_snapshot_state` bookkeeping.
+
+**Why:** Exp26 and Exp27 both regressed despite RENDER=False roughly
+doubling training episodes. The post-mortem in both cases blamed the
+snapshot scheme: with more episodes, an episode-max metric is more likely
+to be a lucky ε-greedy outlier whose underlying greedy policy is weak. By
+saving the *final* model we let the doubled training budget speak directly,
+without snapshot luck biasing what evaluate.py loads. If this still loses
+to Exp19's 1734, the snapshot scheme — not RENDER=False — was the actual
+source of Exp19's lead, and we'll know to bring it back. Simplification
+win even if results are flat: ~10 lines deleted.
+
+**Result:** total_reward = 314 (max_x=314, score=0). Catastrophic. Training
+itself was healthy — episode 40 hit shaped reward 5936 with train_best_score
+1500 (clearly reached deep into the level). But the *final* weights at the
+600-second mark were at episode 46 with shaped reward only 488, and ε is
+still ~0.6 at that point so the policy is far from converged. The snapshot
+scheme is genuinely load-bearing: without it we save whatever transient
+state happens to be present at wall-clock cutoff. The lesson from Exp26-28
+is now clear: RENDER=False produces good *training trajectories* (higher
+peak shaped rewards than Exp19's setup) but the snapshot heuristic is the
+mechanism that captures those peaks for greedy eval. We need both. Reverted.
+
+## Exp29 — RENDER=False + Polyak/EMA shadow weights for eval
+
+**What changed:**
+- `RENDER = False` (proven Exp26 throughput win — ~46 episodes vs ~25).
+- Replaced the *best-episode* snapshot heuristic with a Polyak/EMA shadow
+  copy of the policy weights. After every gradient step:
+  `ema = EMA_DECAY*ema + (1-EMA_DECAY)*policy`, with `EMA_DECAY=0.999`
+  (effective averaging window ~1000 gradient steps). At end of training,
+  `MODELS/model.pt = ema_state` (no episode-best logic at all).
+
+**Why:** Exp26-28 collectively showed: (a) RENDER=False genuinely helps
+training reach further into the level (Exp28 hit shaped reward 5936 in
+episode 40, train_best_score=1500); (b) the *best-episode* snapshot picks
+lucky ε-greedy outliers whose underlying greedy policy is weak; (c) saving
+the *final* weights at wall-clock cutoff is also bad because the model is
+mid-update and ε is still ~0.6. Polyak/EMA averaging is the standard fix
+in RL & supervised SOTA (SWA, target networks themselves) — it produces a
+*smoothed* policy that filters out the high-frequency noise from individual
+gradient steps without picking lottery-ticket episodes. With EMA_DECAY=0.999
+and ~10k gradient steps in 10 minutes, the effective average covers roughly
+the most recent third of training, biasing toward late (better) policies
+while still smoothing them.
+
+**Result:** total_reward = 304 (max_x=304). Two failures stacked:
+1. **GPU thermal cutoff:** RENDER=False is hot — the temp guard tripped at
+   episode 25 (steps=15890, training_seconds=396 of 600), so Exp29 trained
+   ~35% less than Exp19. ε was still 0.733, far from convergence.
+2. **EMA weight averaging hurts:** even ignoring (1), train_best_reward
+   hit 8063 in episode 18 — the *current* policy was learning fast and
+   reaching deep into the level. But weight-space averaging across rapidly
+   changing CNN filters smears out the spatial structure that lets the
+   agent navigate; the averaged weights don't represent any coherent
+   policy. EMA works for stable supervised training; for fast-moving DQN
+   updates over 10k steps it destroys what it tries to preserve.
+
+**Big lesson from the Exp26-29 cluster:** RENDER=True is not just cosmetic
+— it acts as a thermal regulator. Disabling it pushes the GPU above 85°C
+within 6 minutes. Combined with the snapshot-vs-EMA-vs-final exploration,
+the conclusion is firm: **stop trying to disable rendering**. The Exp19
+configuration (RENDER=True + best-episode snapshot + 10-min budget) is the
+ridge we should refine *along*, not perpendicular to. Reverted.
+
 ## Exp30 — Wider FC layer (512→1024)
 
 **What changed:** The fully-connected head of the DQN was widened from
@@ -818,76 +889,23 @@ for longer means more random episodes that can stumble past x=899 —
 more chances for the lucky snapshot to capture a far-reaching policy
 state. EPS_END=0.02 unchanged.
 
-## Exp28 — RENDER=False + drop best-snapshot, save final policy
+**Result:** total_reward = 435 (max_x=435, score=0). Confirmed: EPS_DECAY=50k
+is the sweet spot. More exploration (80k) produces worse snapshots. Reverted.
 
-**What changed:** (a) `RENDER = False` (proven Exp26 throughput win); (b)
-removed the entire best-snapshot selection logic — `MODELS/model.pt` is now
-just `policy_net.state_dict()` at end of training. Also dropped now-unused
-`episode_max_x` / `episode_last_score` / `best_snapshot_metric` /
-`best_snapshot_state` bookkeeping.
-
-**Why:** Exp26 and Exp27 both regressed despite RENDER=False roughly
-doubling training episodes. The post-mortem in both cases blamed the
-snapshot scheme: with more episodes, an episode-max metric is more likely
-to be a lucky ε-greedy outlier whose underlying greedy policy is weak. By
-saving the *final* model we let the doubled training budget speak directly,
-without snapshot luck biasing what evaluate.py loads. If this still loses
-to Exp19's 1734, the snapshot scheme — not RENDER=False — was the actual
-source of Exp19's lead, and we'll know to bring it back. Simplification
-win even if results are flat: ~10 lines deleted.
-
-**Result:** total_reward = 314 (max_x=314, score=0). Catastrophic. Training
-itself was healthy — episode 40 hit shaped reward 5936 with train_best_score
-1500 (clearly reached deep into the level). But the *final* weights at the
-600-second mark were at episode 46 with shaped reward only 488, and ε is
-still ~0.6 at that point so the policy is far from converged. The snapshot
-scheme is genuinely load-bearing: without it we save whatever transient
-state happens to be present at wall-clock cutoff. The lesson from Exp26-28
-is now clear: RENDER=False produces good *training trajectories* (higher
-peak shaped rewards than Exp19's setup) but the snapshot heuristic is the
-mechanism that captures those peaks for greedy eval. We need both. Reverted.
-
-## Exp29 — RENDER=False + Polyak/EMA shadow weights for eval
+## Exp40 — NoisyNet FC layers (state-dependent exploration)
 
 **What changed:**
-- `RENDER = False` (proven Exp26 throughput win — ~46 episodes vs ~25).
-- Replaced the *best-episode* snapshot heuristic with a Polyak/EMA shadow
-  copy of the policy weights. After every gradient step:
-  `ema = EMA_DECAY*ema + (1-EMA_DECAY)*policy`, with `EMA_DECAY=0.999`
-  (effective averaging window ~1000 gradient steps). At end of training,
-  `MODELS/model.pt = ema_state` (no episode-best logic at all).
+- Added `NoisyLinear` class (factorized Gaussian noise, Fortunato et al. 2017).
+  Replaces both FC layers: `Linear(3136,512)` and `Linear(512,n_actions)`
+  become `NoisyLinear` equivalents.
+- Removed ε-greedy — always use `argmax(policy_net(state))`.
+  Exploration comes from learnable noise in the network weights.
+- `reset_noise()` called at each episode start and after each gradient step.
 
-**Why:** Exp26-28 collectively showed: (a) RENDER=False genuinely helps
-training reach further into the level (Exp28 hit shaped reward 5936 in
-episode 40, train_best_score=1500); (b) the *best-episode* snapshot picks
-lucky ε-greedy outliers whose underlying greedy policy is weak; (c) saving
-the *final* weights at wall-clock cutoff is also bad because the model is
-mid-update and ε is still ~0.6. Polyak/EMA averaging is the standard fix
-in RL & supervised SOTA (SWA, target networks themselves) — it produces a
-*smoothed* policy that filters out the high-frequency noise from individual
-gradient steps without picking lottery-ticket episodes. With EMA_DECAY=0.999
-and ~10k gradient steps in 10 minutes, the effective average covers roughly
-the most recent third of training, biasing toward late (better) policies
-while still smoothing them.
-
-**Result:** total_reward = 304 (max_x=304). Two failures stacked:
-1. **GPU thermal cutoff:** RENDER=False is hot — the temp guard tripped at
-   episode 25 (steps=15890, training_seconds=396 of 600), so Exp29 trained
-   ~35% less than Exp19. ε was still 0.733, far from convergence.
-2. **EMA weight averaging hurts:** even ignoring (1), train_best_reward
-   hit 8063 in episode 18 — the *current* policy was learning fast and
-   reaching deep into the level. But weight-space averaging across rapidly
-   changing CNN filters smears out the spatial structure that lets the
-   agent navigate; the averaged weights don't represent any coherent
-   policy. EMA works for stable supervised training; for fast-moving DQN
-   updates over 10k steps it destroys what it tries to preserve.
-
-**Big lesson from the Exp26-29 cluster:** RENDER=True is not just cosmetic
-— it acts as a thermal regulator. Disabling it pushes the GPU above 85°C
-within 6 minutes. Combined with the snapshot-vs-EMA-vs-final exploration,
-the conclusion is firm: **stop trying to disable rendering**. The Exp19
-configuration (RENDER=True + best-episode snapshot + 10-min budget) is the
-ridge we should refine *along*, not perpendicular to. Reverted.
-
+**Why:** NoisyNet provides state-dependent exploration: uncertain states
+(x>899 where agent has seen few transitions) get more varied Q-estimates
+→ exploration exactly where needed. In eval, weights are the learned means
+(no noise) → clean deterministic policy. Used in Rainbow DQN (Hessel et al.
+2017), shown to outperform ε-greedy on Atari.
 
 

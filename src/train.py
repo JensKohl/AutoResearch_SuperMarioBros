@@ -6,6 +6,7 @@ import shimmy
 import gymnasium as gym
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 import torch.optim as optim
 import numpy as np
 import cv2
@@ -23,7 +24,7 @@ BATCH_SIZE = 128
 GAMMA = 0.99
 EPS_START = 1.0
 EPS_END = 0.02
-EPS_DECAY = 80000
+EPS_DECAY = 50000
 TARGET_UPDATE = 1000
 MEMORY_SIZE = 50000
 LR = 1e-4
@@ -143,6 +144,44 @@ class FrameSkip(gym.Wrapper):
         return obs, total_reward, terminated, truncated, info
 
 
+# --- NoisyNet layer (factorized Gaussian noise) ---
+class NoisyLinear(nn.Module):
+    """Replaces Linear with learnable noise for state-dependent exploration.
+    Ref: Fortunato et al. 2017, "Noisy Networks for Exploration"."""
+    def __init__(self, in_features, out_features, std_init=0.5):
+        super().__init__()
+        self.in_features = in_features
+        self.out_features = out_features
+        self.weight_mu = nn.Parameter(torch.empty(out_features, in_features))
+        self.weight_sigma = nn.Parameter(torch.full((out_features, in_features), std_init / in_features ** 0.5))
+        self.register_buffer('weight_epsilon', torch.empty(out_features, in_features))
+        self.bias_mu = nn.Parameter(torch.empty(out_features))
+        self.bias_sigma = nn.Parameter(torch.full((out_features,), std_init / out_features ** 0.5))
+        self.register_buffer('bias_epsilon', torch.empty(out_features))
+        nn.init.kaiming_uniform_(self.weight_mu, nonlinearity='relu')
+        nn.init.zeros_(self.bias_mu)
+        self.reset_noise()
+
+    @staticmethod
+    def _scale_noise(size):
+        x = torch.randn(size)
+        return x.sign() * x.abs().sqrt()
+
+    def reset_noise(self):
+        eps_in = self._scale_noise(self.in_features)
+        eps_out = self._scale_noise(self.out_features)
+        self.weight_epsilon.copy_(eps_out.ger(eps_in))
+        self.bias_epsilon.copy_(eps_out)
+
+    def forward(self, x):
+        if self.training:
+            w = self.weight_mu + self.weight_sigma * self.weight_epsilon
+            b = self.bias_mu + self.bias_sigma * self.bias_epsilon
+        else:
+            w, b = self.weight_mu, self.bias_mu
+        return F.linear(x, w, b)
+
+
 # --- DQN Model ---
 class DQN(nn.Module):
     def __init__(self, n_actions):
@@ -156,22 +195,23 @@ class DQN(nn.Module):
             nn.Conv2d(64, 64, kernel_size=3, stride=1),
             nn.ReLU()
         )
-        self.fc = nn.Sequential(
-            nn.Linear(3136, 512),
-            nn.ReLU(),
-            nn.Linear(512, n_actions)
-        )
-        # Kaiming init for ReLU conv/fc layers
+        self.fc1 = NoisyLinear(3136, 512)
+        self.fc2 = NoisyLinear(512, n_actions)
+        # Kaiming init for ReLU conv layers
         for m in self.modules():
-            if isinstance(m, (nn.Conv2d, nn.Linear)):
+            if isinstance(m, nn.Conv2d):
                 nn.init.kaiming_normal_(m.weight, nonlinearity='relu')
                 if m.bias is not None:
                     nn.init.zeros_(m.bias)
 
+    def reset_noise(self):
+        self.fc1.reset_noise()
+        self.fc2.reset_noise()
+
     def forward(self, x):
         features = self.conv(x)
         features = features.view(features.size(0), -1)
-        return self.fc(features)
+        return self.fc2(F.relu(self.fc1(features)))
 
 
 # --- Replay Buffer ---
@@ -238,15 +278,15 @@ def train():
             episode_reward = 0
             episode_max_x = 0
             episode_last_score = 0
+            # Reset NoisyNet noise at each episode start for fresh exploration.
+            policy_net.reset_noise()
+            target_net.reset_noise()
 
             for t in range(MAX_EPISODE_STEPS):
-                eps_threshold = EPS_END + (EPS_START - EPS_END) * np.exp(-1. * steps_done / EPS_DECAY)
-                if random.random() > eps_threshold:
-                    with torch.no_grad():
-                        state_tensor = torch.FloatTensor(state).unsqueeze(0).to(device) / 255.0
-                        action = policy_net(state_tensor).max(1)[1].view(1, 1).item()
-                else:
-                    action = env.action_space.sample()
+                eps_threshold = 0.0  # NoisyNet provides exploration via network noise
+                with torch.no_grad():
+                    state_tensor = torch.FloatTensor(state).unsqueeze(0).to(device) / 255.0
+                    action = policy_net(state_tensor).max(1)[1].item()
                 steps_done += 1
 
                 next_state, reward, terminated, truncated, info = env.step(action)
@@ -291,6 +331,8 @@ def train():
                     loss.backward()
                     torch.nn.utils.clip_grad_norm_(policy_net.parameters(), 10.0)
                     optimizer.step()
+                    policy_net.reset_noise()
+                    target_net.reset_noise()
 
                 if steps_done % TARGET_UPDATE == 0:
                     target_net.load_state_dict(policy_net.state_dict())
