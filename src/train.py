@@ -227,9 +227,11 @@ def train():
     best_total_reward = -float('inf')
     best_score = 0
     best_time = 0
-    # Track best snapshot by eval-aligned proxy: score + max_x_dist per episode.
+    # Track best greedy-checkpoint metric: score + max_x from a ε=0 probe episode.
     best_snapshot_metric = -float('inf')
     best_snapshot_state = None
+    GREEDY_EVAL_EVERY = 5   # run a greedy probe after every N training episodes
+    GREEDY_EVAL_STEPS = 150  # max steps per greedy probe (keep overhead low)
 
     try:
         while time.time() - start_time < TIME_BUDGET:
@@ -306,14 +308,25 @@ def train():
                     break
 
             total_rewards.append(episode_reward)
-            # Snapshot the model after any episode that beats our best
-            # eval-aligned proxy (score + max_x_dist), matching evaluate.py.
-            # Use max_x only: score-farming (looping for coins) can inflate
-            # episode_last_score without representing real level progress.
-            episode_metric = episode_max_x
-            if episode_metric > best_snapshot_metric:
-                best_snapshot_metric = episode_metric
-                best_snapshot_state = {k: v.detach().cpu().clone() for k, v in policy_net.state_dict().items()}
+            # Every GREEDY_EVAL_EVERY episodes, run a short greedy probe (ε=0)
+            # and save snapshot if it's the best seen so far.
+            if len(total_rewards) % GREEDY_EVAL_EVERY == 0:
+                probe_state, _ = env.reset()
+                probe_max_x = 0
+                probe_score = 0
+                for _ in range(GREEDY_EVAL_STEPS):
+                    with torch.no_grad():
+                        st = torch.FloatTensor(probe_state).unsqueeze(0).to(device) / 255.0
+                        probe_action = policy_net(st).max(1)[1].item()
+                    probe_state, _, probe_done, probe_trunc, probe_info = env.step(probe_action)
+                    probe_max_x = max(probe_max_x, probe_info.get('x_pos', 0))
+                    probe_score = probe_info.get('score', 0)
+                    if probe_done or probe_trunc:
+                        break
+                greedy_metric = probe_score + probe_max_x
+                if greedy_metric > best_snapshot_metric:
+                    best_snapshot_metric = greedy_metric
+                    best_snapshot_state = {k: v.detach().cpu().clone() for k, v in policy_net.state_dict().items()}
             gpu_temp = get_gpu_temp()
             print(f"Episode {len(total_rewards):>3} | Reward: {episode_reward:>6.1f} | Epsilon: {eps_threshold:>5.3f} | Steps: {steps_done} | GPU: {gpu_temp}°C")
             if gpu_temp >= MAX_GPU_TEMP:

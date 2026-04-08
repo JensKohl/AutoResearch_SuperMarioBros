@@ -651,6 +651,31 @@ Mario reached furthest right, not the one where he farmed the most points.
 This is also simpler — one less variable to track (`episode_last_score`
 can be removed).
 
+**Result:** total_reward = 310 (max_x=310). saved_snapshot_metric=2024
+shows training found an episode where Mario reached x=2024, but greedy
+eval only got 310. The pure max_x snapshot picks the luckiest ε-greedy
+exploration run — Mario stumbled rightward with ε~0.7 noise; the underlying
+greedy policy never learned to replicate it. Score component in the old
+metric was actually slightly useful as a proxy for *skill* (you need
+consecutive successful actions to accumulate score). Reverted.
+
+## Exp32 — Periodic greedy checkpoint (ε=0 probe every 5 episodes)
+
+**What changed:** Replaced the ε-greedy episode metric snapshot with a
+*greedy probe* run. Every `GREEDY_EVAL_EVERY=5` training episodes, the
+training loop pauses and runs up to `GREEDY_EVAL_STEPS=150` steps with
+ε=0 (pure policy_net argmax). The snapshot is saved iff this greedy probe's
+`score + max_x` beats the best seen so far.
+
+**Why:** All snapshot variants tried (score+max_x, max_x-only, skip-first-N,
+EMA) suffer the same failure: during training, ε is 0.6-0.8 for most of the
+budget, so any "great training episode" is partly luck. A *greedy* probe
+runs the actual policy (no random actions), giving a direct measurement of
+what evaluate.py will see. 5 episodes between probes × ~150 steps × 3
+frame_skip = ~2250 raw env steps ≈ 20 seconds per probe, so 5 probes in
+10 minutes = ~100 seconds overhead (~17% of budget). Worth it if snapshot
+quality improves significantly.
+
 ## Exp28 — RENDER=False + drop best-snapshot, save final policy
 
 **What changed:** (a) `RENDER = False` (proven Exp26 throughput win); (b)
