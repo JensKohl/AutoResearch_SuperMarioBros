@@ -750,6 +750,29 @@ replaced it), so it shouldn't destabilize earlier learning. The global_max_x
 resets only at class construction (not at env.reset) so it accumulates
 across episodes.
 
+**Result:** total_reward = 40 (max_x=40). Catastrophic. The frontier bonus
+is a non-stationary reward: it fires ONCE per x-position globally, then
+never again. When replayed, those transitions have the same state+action but
+a different reward than future visits — large inconsistent TD errors
+destabilize learning. Reverted.
+
+## Exp36 — Dual replay: frontier buffer for x > 800 (50% oversampling)
+
+**What changed:**
+- Added `FrontierBuffer` (subclass of `ReplayBuffer`, capacity 5000).
+- Every transition with `x_pos >= 800` is pushed to BOTH the main buffer
+  AND the frontier buffer.
+- During training, 50% of gradient steps sample from the frontier buffer
+  (when it has ≥ 128 entries), the rest from the main buffer.
+
+**Why:** Greedy probe (Exp34) shows the policy plateaus at x=899. Only ~5%
+of training transitions come from x>800, so that region is underrepresented
+in gradient updates. Oversampling it 50% gives ~10× more learning signal
+for the critical region. Unlike full PER (Exp25, too slow) this only
+requires a simple threshold filter with no priority computation. Unlike
+Exp35's frontier bonus (non-stationary), this just changes the *sampling
+distribution* — rewards are unchanged, so no TD consistency issues.
+
 ## Exp28 — RENDER=False + drop best-snapshot, save final policy
 
 **What changed:** (a) `RENDER = False` (proven Exp26 throughput win); (b)

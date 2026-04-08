@@ -110,7 +110,6 @@ class DistanceReward(gym.Wrapper):
     def __init__(self, env):
         super().__init__(env)
         self.curr_x = 0
-        self.global_max_x = 0  # frontier tracking across all episodes
 
     def reset(self, **kwargs):
         self.curr_x = 0
@@ -122,10 +121,6 @@ class DistanceReward(gym.Wrapper):
         reward += (x_pos - self.curr_x) * 2.0
         self.curr_x = x_pos
         reward -= 0.1
-        # Frontier bonus: extra reward for reaching a globally new x position.
-        if x_pos > self.global_max_x:
-            reward += (x_pos - self.global_max_x) * 1.0
-            self.global_max_x = x_pos
         if info.get('flag_get', False):
             reward += 1000.0
         return obs, reward, terminated, truncated, info
@@ -196,6 +191,16 @@ class ReplayBuffer:
         return len(self.buffer)
 
 
+FRONTIER_THRESHOLD = 800  # x-position above which transitions are "frontier"
+
+class FrontierBuffer(ReplayBuffer):
+    """Stores only transitions from deep in the level (x_pos >= FRONTIER_THRESHOLD).
+    Oversampling these increases learning signal in the sparse high-x region."""
+    def push_if_frontier(self, state, action, reward, next_state, done, x_pos):
+        if x_pos >= FRONTIER_THRESHOLD:
+            self.buffer.append((state, action, reward, next_state, done))
+
+
 # --- Training Loop ---
 def train():
     env = make_env(render=RENDER)
@@ -213,18 +218,20 @@ def train():
 
     optimizer = optim.Adam(policy_net.parameters(), lr=LR)
     memory = ReplayBuffer(MEMORY_SIZE)
+    frontier = FrontierBuffer(5000)  # stores high-x transitions for oversampling
     steps_done = 0
 
     # N-step transition buffer: holds the last N (s,a,r) tuples
     nstep_buffer = deque(maxlen=N_STEP)
 
-    def push_nstep(next_state, done):
+    def push_nstep(next_state, done, x_pos=0):
         # Aggregate the oldest transition's N-step return and push to replay
         R = 0.0
         for i, (_, _, r_i) in enumerate(nstep_buffer):
             R += (GAMMA ** i) * r_i
         s0, a0, _ = nstep_buffer[0]
         memory.push(s0, a0, R, next_state, done)
+        frontier.push_if_frontier(s0, a0, R, next_state, done, x_pos)
 
     start_time = time.time()
     total_rewards = []
@@ -258,9 +265,10 @@ def train():
                 done = terminated or truncated
                 episode_reward += reward
 
+                x_pos = info.get('x_pos', 0)
                 nstep_buffer.append((state, action, reward))
                 if len(nstep_buffer) == N_STEP:
-                    push_nstep(next_state, done)
+                    push_nstep(next_state, done, x_pos)
                 state = next_state
 
                 current_time = info.get('time', 0)
@@ -272,11 +280,15 @@ def train():
                     best_time = current_time
 
                 # Track per-episode peak position and final score for snapshot selection
-                episode_max_x = max(episode_max_x, info.get('x_pos', 0))
+                episode_max_x = max(episode_max_x, x_pos)
                 episode_last_score = current_score
 
                 if len(memory) >= LEARN_START:
-                    states, actions, rewards, next_states, dones = memory.sample(BATCH_SIZE)
+                    # 50% of batches from frontier buffer (if it has enough data).
+                    if len(frontier) >= BATCH_SIZE and random.random() < 0.5:
+                        states, actions, rewards, next_states, dones = frontier.sample(BATCH_SIZE)
+                    else:
+                        states, actions, rewards, next_states, dones = memory.sample(BATCH_SIZE)
                     states = torch.FloatTensor(states).to(device) / 255.0
                     actions = torch.LongTensor(actions).unsqueeze(1).to(device)
                     rewards = torch.FloatTensor(rewards).to(device)
