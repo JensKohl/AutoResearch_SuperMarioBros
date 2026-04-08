@@ -1124,3 +1124,22 @@ we get the best of both worlds: PPO exploration + DQN-compatible greedy
 policy. The Q-head trains on `returns = advantages + values` which is the
 standard MC/TD estimate of Q(s,a).
 
+**Result:** total_reward = 315 (max_x=315, score=0). Stochastic training
+reached x=2022 (mean reward 7165!), but greedy Q-head still gets x=315.
+Likely cause: returns are in range 0-7000, so Q-head MSE loss ≈ 10^6 scale
+vs policy loss ≈ O(1). The enormous Q-head gradient overwhelms shared
+features and distorts the policy. Fixing in Exp51.
+
+## Exp51 — PPO Q-head fix: detached features + normalized targets
+
+**What changed:**
+- Q-head now uses `with torch.no_grad(): q_feats = net.fc(net.conv(...))` — detached from PPO graph
+- Q-head MSE targets normalized to zero-mean unit-variance (preserve relative ordering for argmax, fix scale)
+- Removed coefficient 0.5 from Q-head loss (now just plain MSE on normalized targets)
+
+**Why:** In Exp50, returns were O(1000-7000), making Q-head MSE loss O(10^6)
+which dominated the gradient through shared features. This likely disrupted PPO
+training. By detaching features, the Q-head trains as a separate linear probe
+on top of PPO features — no interference. Normalizing targets fixes scale while
+preserving the relative ordering that matters for argmax(Q).
+

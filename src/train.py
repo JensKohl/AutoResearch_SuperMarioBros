@@ -366,10 +366,14 @@ def train():
                     policy_loss = -torch.min(surr1, surr2).mean()
                     value_loss = VALUE_COEF * F.mse_loss(values, mb_returns.detach())
                     entropy_loss = -ENTROPY_COEF * entropy.mean()
-                    # Q-head: fit per-action Q-values to PPO returns (for greedy eval)
-                    q_pred = net.q_head(net.fc(net.conv(mb_states).view(len(mb_states), -1)))
-                    q_loss = 0.5 * F.mse_loss(q_pred.gather(1, mb_actions.unsqueeze(1)).squeeze(1),
-                                               mb_returns.detach())
+                    # Q-head: fit per-action Q-values to normalized PPO returns
+                    # Detached features → Q-head trains independently, no PPO interference
+                    with torch.no_grad():
+                        q_feats = net.fc(net.conv(mb_states).view(len(mb_states), -1))
+                    q_pred = net.q_head(q_feats)
+                    q_targets = (mb_returns - mb_returns.mean()) / (mb_returns.std() + 1e-8)
+                    q_loss = F.mse_loss(q_pred.gather(1, mb_actions.unsqueeze(1)).squeeze(1),
+                                        q_targets.detach())
 
                     loss = policy_loss + value_loss + entropy_loss + q_loss
                     optimizer.zero_grad()
