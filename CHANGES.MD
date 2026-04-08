@@ -908,4 +908,21 @@ is the sweet spot. More exploration (80k) produces worse snapshots. Reverted.
 (no noise) → clean deterministic policy. Used in Rainbow DQN (Hessel et al.
 2017), shown to outperform ε-greedy on Atari.
 
+**Result:** total_reward = 676 (max_x=676, score=0). The noisy training
+episodes don't create the "lucky far-reaching" snapshots that ε-greedy
+does. NoisyNet's exploration is more methodical but less prone to occasional
+windfall exploration that ε-greedy provides. VRAM also increased to 161MB.
+Reverted.
+
+## Exp41 — TARGET_UPDATE 1000 → 2000
+
+**What changed:** `TARGET_UPDATE = 1000` → `TARGET_UPDATE = 2000`.
+
+**Why:** With ~17k training steps, the target net updates 17 times at 1000
+or 8 times at 2000. The original DQN (Mnih et al. 2015) used 10k updates
+with millions of total steps — proportionally our 1000 is very frequent and
+may cause instability (moving target updated too often). Doubling to 2000
+gives longer stable target windows, potentially allowing the policy to
+converge to a better fixed-target solution before the next update.
+
 
