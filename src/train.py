@@ -232,7 +232,12 @@ def train():
     best_snapshot_state = None
 
     try:
+        episode_idx = 0
         while time.time() - start_time < TIME_BUDGET:
+            episode_idx += 1
+            # Every 5th episode is a greedy validation rollout (no exploration).
+            # Used to gate the best-snapshot save with an unbiased signal.
+            is_validation = (episode_idx % 5 == 0)
             state, info = env.reset()
             nstep_buffer.clear()
             episode_reward = 0
@@ -241,7 +246,7 @@ def train():
 
             for t in range(MAX_EPISODE_STEPS):
                 eps_threshold = EPS_END + (EPS_START - EPS_END) * np.exp(-1. * steps_done / EPS_DECAY)
-                if random.random() > eps_threshold:
+                if is_validation or random.random() > eps_threshold:
                     with torch.no_grad():
                         state_tensor = torch.FloatTensor(state).unsqueeze(0).to(device) / 255.0
                         action = policy_net(state_tensor).max(1)[1].view(1, 1).item()
@@ -309,10 +314,10 @@ def train():
                     break
 
             total_rewards.append(episode_reward)
-            # Snapshot the model after any episode that beats our best
-            # eval-aligned proxy (score + max_x_dist), matching evaluate.py.
+            # Snapshot only from greedy validation episodes — gives an
+            # unbiased signal of the policy's true greedy quality.
             episode_metric = episode_last_score + episode_max_x
-            if episode_metric > best_snapshot_metric:
+            if is_validation and episode_metric > best_snapshot_metric:
                 best_snapshot_metric = episode_metric
                 best_snapshot_state = {k: v.detach().cpu().clone() for k, v in policy_net.state_dict().items()}
             gpu_temp = get_gpu_temp()

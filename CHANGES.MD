@@ -457,5 +457,23 @@ high `τ`, which weakens the "fixed-target" stabilization that vanilla DQN
 relies on. With our small budget and no PER, the target needs to be staler than
 this. Sticking with hard 1000-step copies. Reverted.
 
+## Exp22 — Periodic greedy validation episodes for snapshot
+
+**What changed:** Every 5th training episode (`episode_idx % 5 == 0`) is now a
+*validation* episode that runs with `ε=0` (fully greedy, no exploration). All
+other episodes are unchanged. The best-snapshot save is now gated on validation
+episodes only — only their `score + max_x` can update the saved snapshot.
+
+**Why:** Exp19's snapshot picked an ε-greedy episode that completed the level
+*because of* random actions; the same weights couldn't reproduce the win in
+greedy eval (`saved_snapshot_metric=19157` vs `total_reward=1734`). Exp20's
+naive ε-threshold filter never fired (ε never gets below 0.75 in 5 min).
+Forcing one in five episodes to be greedy creates an honest sample of "what
+the current policy actually does when it can't gamble." Snapshots saved from
+those episodes should generalise to evaluate.py's greedy rollout, since
+they're produced *exactly* the same way. Cost: ~20% of training episodes do
+no exploration, so the replay buffer gets slightly less diverse. Worth it if
+the snapshot quality goes up.
+
 
 
