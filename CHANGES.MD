@@ -314,3 +314,15 @@ the way. Modest but positive, and the mechanism is orthogonal so it stacks with
 future experiments. Noted: the persistent x=899 wall is clearly the next thing
 to attack — every experiment since Exp6 plateaus there.
 
+## Exp16 — Weight decay 1e-5
+
+**What changed:** Passed `weight_decay=1e-5` to the Adam optimizer.
+
+**Why:** Very mild L2 regularization. With only ~20k updates against a finite
+replay buffer, the net has every opportunity to overfit to transient state
+distributions (e.g. those few episodes where it got lucky past some enemy).
+Weight decay shrinks parameters toward zero, which in practice smooths the
+learned Q-function and can improve generalization to states the agent hasn't
+seen much of (like everything past x=899). 1e-5 is gentle — it should barely
+touch trained weights but pull unused weights toward zero. Cheap, orthogonal.
+

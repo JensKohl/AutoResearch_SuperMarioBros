@@ -206,7 +206,7 @@ def train():
     target_net.load_state_dict(policy_net.state_dict())
     target_net.eval()
 
-    optimizer = optim.Adam(policy_net.parameters(), lr=LR)
+    optimizer = optim.Adam(policy_net.parameters(), lr=LR, weight_decay=1e-5)
     memory = ReplayBuffer(MEMORY_SIZE)
     steps_done = 0
 
