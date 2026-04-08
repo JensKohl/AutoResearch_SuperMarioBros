@@ -285,3 +285,9 @@ Variance per update goes up, but with gradient clipping and n-step returns
 already smoothing things, the net should still be stable. If this wins, it's
 a pure throughput gain.
 
+**Result:** `total_reward=635`, `max_x_dist=435`, `score=200`, `flag_get=False`.
+**-864 vs Exp9 — discarded.** So BATCH_SIZE is not monotonic: 128 beats both
+256 (Exp10) and 64. The "Exp9 is on a sharp edge" pattern continues. What this
+tells me: we are *not* purely update-bound — gradient quality matters too, and
+64 is too noisy for the net to track a moving target.
+
