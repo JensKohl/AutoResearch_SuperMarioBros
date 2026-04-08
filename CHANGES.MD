@@ -1269,3 +1269,22 @@ for states past x=434 to learn a greedy policy there. Slightly more entropy
 for those states. This is halfway between Exp57 (0.005) and the failed Exp52
 (0.01), which hopefully avoids the regression while improving coverage.
 
+**Result:** total_reward = 316 (max_x=316, score=0). Worse. entropy=0.008
+caused stochastic training to only reach x=1226, and greedy probe got x=316.
+Reverted. entropy=0.005 is confirmed as the sweet spot.
+
+## Exp59 — PPO: running-stats Q-head normalization (cross-rollout consistency)
+
+**What changed:**
+- Running mean/std for Q-head return normalization (`q_ret_mean`, `q_ret_std`, EMA α=0.01)
+- Q-head targets = `(returns - q_ret_mean) / q_ret_std` (consistent across rollouts)
+- Returns are still used (not advantages) with this normalization
+
+**Why:** In Exp51-54, Q-head targets were normalized PER ROLLOUT (per-rollout
+mean/std). This means the Q-head learns a DIFFERENT scale each rollout, making
+Q-values inconsistent: rollout A's return=500 might be normalized to +1.5, but
+rollout B's return=500 might be normalized to -0.3 (if rollout B had higher mean
+returns). With running stats, the normalization is CONSISTENT — Q(s,a)=+1.5
+always means the same "expected return level" regardless of when it was seen.
+This should produce more stable and accurate Q-values for greedy selection.
+

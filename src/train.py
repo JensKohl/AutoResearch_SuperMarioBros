@@ -23,7 +23,7 @@ GAMMA = 0.99
 GAE_LAMBDA = 0.95
 CLIP_EPS = 0.2
 VALUE_COEF = 0.5
-ENTROPY_COEF = 0.008  # slightly more exploration than 0.005; keep Q-head stable
+ENTROPY_COEF = 0.005  # very small — encourage policy to peak at correct actions
 LR = 1e-4
 MAX_GRAD_NORM = 0.5
 N_STEPS = 128    # smaller rollout → more frequent updates → faster convergence
@@ -257,6 +257,10 @@ def train():
     best_snapshot_state = None
     best_snapshot_metric = -float('inf')
 
+    # Running statistics for consistent cross-rollout Q-head normalization
+    q_ret_mean = 0.0
+    q_ret_std = 1.0
+
     best_total_reward = -float('inf')
     best_score = 0
     best_time = 0
@@ -342,6 +346,12 @@ def train():
             returns = advantages + values_t
             advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
 
+            # Update running return stats for Q-head normalization
+            ret_mean = returns.mean().item()
+            ret_std = returns.std().item()
+            q_ret_mean = 0.99 * q_ret_mean + 0.01 * ret_mean
+            q_ret_std = 0.99 * q_ret_std + 0.01 * (ret_std if ret_std > 0 else 1.0)
+
             # ---- PPO Update ----
             states_arr = np.array(rollout_states, dtype=np.float32) / 255.0
             states_t = torch.FloatTensor(states_arr).to(device)
@@ -366,14 +376,14 @@ def train():
                     policy_loss = -torch.min(surr1, surr2).mean()
                     value_loss = VALUE_COEF * F.mse_loss(values, mb_returns.detach())
                     entropy_loss = -ENTROPY_COEF * entropy.mean()
-                    # Q-head: fit per-action Q-values to normalized PPO returns
-                    # Q-head targets = advantages (normalized at rollout level, O(1) scale)
-                    # argmax(A(s,a)) == argmax(Q(s,a)) so this is equivalent for greedy eval
+                    # Q-head: returns normalized with RUNNING stats (consistent across rollouts)
+                    # Running stats updated once per rollout (outside minibatch loop)
                     with torch.no_grad():
                         q_feats = net.fc(net.conv(mb_states).view(len(mb_states), -1))
                     q_pred = net.q_head(q_feats)
+                    mb_q_targets = (mb_returns - q_ret_mean) / (q_ret_std + 1e-8)
                     q_loss = F.mse_loss(q_pred.gather(1, mb_actions.unsqueeze(1)).squeeze(1),
-                                        mb_advantages.detach())
+                                        mb_q_targets.detach())
 
                     loss = policy_loss + value_loss + entropy_loss + q_loss
                     optimizer.zero_grad()
