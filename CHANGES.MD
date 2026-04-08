@@ -485,5 +485,20 @@ replay buffer. Reverted. Lesson: snapshot selection is fundamentally limited
 without an in-distribution validation signal — we can only optimize for the
 *expected* greedy reward, which is what Exp19 already does.
 
+## Exp23 — Higher gamma (0.99 → 0.995)
+
+**What changed:** `GAMMA = 0.99 → 0.995`. One number.
+
+**Why:** The flag bonus is +1000 — by far the largest single reward in the
+shaped scheme — but it only fires *at* the flag. With γ=0.99 over an episode
+of (say) 800 steps, that bonus is discounted by `0.99^800 ≈ 3e-4`, so by the
+start of the level it's worth less than a single distance-pixel. Bumping to
+γ=0.995 raises that to `0.995^800 ≈ 0.018`, ~60× more long-horizon weight.
+That's enough to actually pull the value function toward "go right and
+finish." Risk: longer credit horizons can also amplify off-policy noise from
+the n-step returns. Worth a try given Exp19 already shows training reaches the
+flag occasionally — the question is whether the *value function* learns to
+expect it.
+
 
 
