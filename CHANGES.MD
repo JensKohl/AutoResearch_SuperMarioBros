@@ -666,5 +666,24 @@ and ~10k gradient steps in 10 minutes, the effective average covers roughly
 the most recent third of training, biasing toward late (better) policies
 while still smoothing them.
 
+**Result:** total_reward = 304 (max_x=304). Two failures stacked:
+1. **GPU thermal cutoff:** RENDER=False is hot — the temp guard tripped at
+   episode 25 (steps=15890, training_seconds=396 of 600), so Exp29 trained
+   ~35% less than Exp19. ε was still 0.733, far from convergence.
+2. **EMA weight averaging hurts:** even ignoring (1), train_best_reward
+   hit 8063 in episode 18 — the *current* policy was learning fast and
+   reaching deep into the level. But weight-space averaging across rapidly
+   changing CNN filters smears out the spatial structure that lets the
+   agent navigate; the averaged weights don't represent any coherent
+   policy. EMA works for stable supervised training; for fast-moving DQN
+   updates over 10k steps it destroys what it tries to preserve.
+
+**Big lesson from the Exp26-29 cluster:** RENDER=True is not just cosmetic
+— it acts as a thermal regulator. Disabling it pushes the GPU above 85°C
+within 6 minutes. Combined with the snapshot-vs-EMA-vs-final exploration,
+the conclusion is firm: **stop trying to disable rendering**. The Exp19
+configuration (RENDER=True + best-episode snapshot + 10-min budget) is the
+ridge we should refine *along*, not perpendicular to. Reverted.
+
 
 
