@@ -133,3 +133,13 @@ without gradient control. With norm-10 clipping in place they work as advertised
 and dramatically accelerate credit assignment for this short training budget.
 `peak_vram_mb` unchanged at 115. New foundation for further experiments.
 
+## Exp7 — 3-step returns (push n-step further)
+
+**What changed:** `N_STEP = 2 → 3`. Nothing else.
+
+**Why:** Exp6's jump from 635 → 1199 was the biggest step yet. n=3 propagates
+reward three Bellman backups per update — even faster credit assignment. Exp3
+originally tried n=3 and failed, but that was before gradient clipping; the
+clipping (Exp4) should now absorb the larger target magnitudes. Worth ~30 seconds
+to find out.
+
