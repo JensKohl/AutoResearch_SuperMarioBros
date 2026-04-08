@@ -165,3 +165,10 @@ note that with N_STEP=2 each replay transition now spans 2·4=8 raw frames of
 lookahead versus 2·3=6 — slightly more aggressive credit assignment, but well
 within what Exp6 showed is stable.
 
+**Result:** `total_reward=304`, `max_x_dist=304`, `score=0`, `flag_get=False`.
+**-895 vs Exp6 — discarded.** Combined with Exp7's failure this is a strong
+signal that Exp6's stable zone is narrower than it looks: either more
+lookahead per update (higher N) or fewer updates per game second (higher skip)
+breaks it. Reverted to skip=3. Next ideas should stay within that envelope —
+e.g. reward shaping, exploration schedule, or prioritized replay.
+

@@ -187,7 +187,7 @@ class ReplayBuffer:
 # --- Training Loop ---
 def train():
     env = make_env(render=RENDER)
-    env = FrameSkip(env, skip=4)
+    env = FrameSkip(env, skip=3)
     env = DistanceReward(env)
     env = PreprocessFrame(env)
     env = EnsureChannelFirst(env)
