@@ -773,6 +773,20 @@ requires a simple threshold filter with no priority computation. Unlike
 Exp35's frontier bonus (non-stationary), this just changes the *sampling
 distribution* — rewards are unchanged, so no TD consistency issues.
 
+**Result:** total_reward = 595 (max_x=595, score=0). Oversampling frontier
+transitions biases gradients toward high-x behavior, hurting early-level
+navigation. score=0 indicates rushing past enemies/coins. Reverted.
+
+## Exp37 — FrameSkip 3 → 2 (more env steps per 10 minutes)
+
+**What changed:** `FrameSkip(env, skip=3)` → `FrameSkip(env, skip=2)`.
+
+**Why:** FrameSkip=2 gives ~50% more wrapper steps per wall-clock second =
+more gradient updates in the 10-minute budget. Exp8 tested FrameSkip=4
+(fewer steps, failed). FrameSkip=2 goes in the other direction. More
+actions per second AND finer control. Risk: more steps per game distance
+covered, but LEARN_START=1000 provides warm-up buffer.
+
 ## Exp28 — RENDER=False + drop best-snapshot, save final policy
 
 **What changed:** (a) `RENDER = False` (proven Exp26 throughput win); (b)
