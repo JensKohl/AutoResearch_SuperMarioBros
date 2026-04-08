@@ -632,5 +632,39 @@ to Exp19's 1734, the snapshot scheme — not RENDER=False — was the actual
 source of Exp19's lead, and we'll know to bring it back. Simplification
 win even if results are flat: ~10 lines deleted.
 
+**Result:** total_reward = 314 (max_x=314, score=0). Catastrophic. Training
+itself was healthy — episode 40 hit shaped reward 5936 with train_best_score
+1500 (clearly reached deep into the level). But the *final* weights at the
+600-second mark were at episode 46 with shaped reward only 488, and ε is
+still ~0.6 at that point so the policy is far from converged. The snapshot
+scheme is genuinely load-bearing: without it we save whatever transient
+state happens to be present at wall-clock cutoff. The lesson from Exp26-28
+is now clear: RENDER=False produces good *training trajectories* (higher
+peak shaped rewards than Exp19's setup) but the snapshot heuristic is the
+mechanism that captures those peaks for greedy eval. We need both. Reverted.
+
+## Exp29 — RENDER=False + Polyak/EMA shadow weights for eval
+
+**What changed:**
+- `RENDER = False` (proven Exp26 throughput win — ~46 episodes vs ~25).
+- Replaced the *best-episode* snapshot heuristic with a Polyak/EMA shadow
+  copy of the policy weights. After every gradient step:
+  `ema = EMA_DECAY*ema + (1-EMA_DECAY)*policy`, with `EMA_DECAY=0.999`
+  (effective averaging window ~1000 gradient steps). At end of training,
+  `MODELS/model.pt = ema_state` (no episode-best logic at all).
+
+**Why:** Exp26-28 collectively showed: (a) RENDER=False genuinely helps
+training reach further into the level (Exp28 hit shaped reward 5936 in
+episode 40, train_best_score=1500); (b) the *best-episode* snapshot picks
+lucky ε-greedy outliers whose underlying greedy policy is weak; (c) saving
+the *final* weights at wall-clock cutoff is also bad because the model is
+mid-update and ε is still ~0.6. Polyak/EMA averaging is the standard fix
+in RL & supervised SOTA (SWA, target networks themselves) — it produces a
+*smoothed* policy that filters out the high-frequency noise from individual
+gradient steps without picking lottery-ticket episodes. With EMA_DECAY=0.999
+and ~10k gradient steps in 10 minutes, the effective average covers roughly
+the most recent third of training, biasing toward late (better) policies
+while still smoothing them.
+
 
 

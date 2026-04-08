@@ -28,6 +28,7 @@ TARGET_UPDATE = 1000
 MEMORY_SIZE = 50000
 LR = 1e-4
 RENDER = False
+EMA_DECAY = 0.999  # Polyak average for the saved-eval model
 N_STEP = 2  # N-step returns: R = r_t + γ·r_{t+1} + ... , bootstrap with γ^N
 LEARN_START = 1000  # wait until replay buffer has this many transitions before training
 
@@ -210,6 +211,9 @@ def train():
     memory = ReplayBuffer(MEMORY_SIZE)
     steps_done = 0
 
+    # EMA (Polyak) shadow weights for stable eval-time model.
+    ema_state = {k: v.detach().clone() for k, v in policy_net.state_dict().items()}
+
     # N-step transition buffer: holds the last N (s,a,r) tuples
     nstep_buffer = deque(maxlen=N_STEP)
 
@@ -283,6 +287,11 @@ def train():
                     torch.nn.utils.clip_grad_norm_(policy_net.parameters(), 10.0)
                     optimizer.step()
 
+                    # Update EMA shadow weights after each gradient step.
+                    with torch.no_grad():
+                        for k, v in policy_net.state_dict().items():
+                            ema_state[k].mul_(EMA_DECAY).add_(v.detach(), alpha=1.0 - EMA_DECAY)
+
                 if steps_done % TARGET_UPDATE == 0:
                     target_net.load_state_dict(policy_net.state_dict())
 
@@ -311,7 +320,8 @@ def train():
     finally:
         env.close()
         os.makedirs("MODELS", exist_ok=True)
-        torch.save(policy_net.state_dict(), "MODELS/model.pt")
+        # Save EMA (Polyak-averaged) weights for stable greedy eval.
+        torch.save(ema_state, "MODELS/model.pt")
 
         training_seconds = time.time() - start_time
         print(f"training_seconds: {training_seconds:.1f}")
