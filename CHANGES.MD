@@ -186,3 +186,10 @@ exploration has had time to produce any diversity. The canonical DQN setup
 but 1000 is a reasonable compromise — it's only ~5-10% of a full run and ensures
 the first batch is drawn from a non-trivially diverse pool. Cheap to try.
 
+**Result:** `total_reward=1499`, `max_x_dist=899`, `score=600`, `flag_get=False`.
+**+300 over Exp6 — kept.** `max_x_dist` is identical to Exp6 (899) but the
+in-game score has doubled (300 → 600), meaning the agent is spending more of its
+time interacting (stomping enemies, collecting coins) rather than just running
+right. Consistent with the intuition that a warmer initial replay avoids an early
+"just-go-right" basin and lets the network develop richer behaviour.
+
