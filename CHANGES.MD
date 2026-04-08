@@ -578,5 +578,15 @@ directly into more env steps and more gradient updates within the 5 min budget.
 Rendering exists to let *humans* watch training; it has zero training benefit.
 Easy, large expected win.
 
+**Result:** `total_reward=535`, `max_x_dist=435`, `score=100`, `flag_get=False`.
+**-1199 vs Exp19 — discarded** (per the loop rules), but the training output
+is *very* informative: the agent ran 46 episodes instead of ~20-30, reached
+~25k env steps instead of ~20k, and `saved_snapshot_metric=4448` vs Exp19's
+~19k. The render-off win is real on the *training* side — the snapshot scheme
+is now the bottleneck. With more training episodes there are more chances for
+a single ε-greedy lucky episode to set a high snapshot metric that the greedy
+policy can't reproduce. The next experiment combines RENDER=False with a
+better snapshot heuristic. Reverted for now.
+
 
 
