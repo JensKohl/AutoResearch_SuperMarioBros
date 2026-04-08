@@ -23,9 +23,9 @@ BATCH_SIZE = 128
 GAMMA = 0.99
 EPS_START = 1.0
 EPS_END = 0.02
-EPS_DECAY = 10000
+EPS_DECAY = 50000
 TARGET_UPDATE = 1000
-MEMORY_SIZE = 10000
+MEMORY_SIZE = 50000
 LR = 1e-4
 RENDER = True
 
@@ -249,10 +249,12 @@ def train():
 
                     q_values = policy_net(states).gather(1, actions)
                     with torch.no_grad():
-                        next_q_values = target_net(next_states).max(1)[0]
+                        # Double DQN: policy net picks action, target net evaluates it.
+                        next_actions = policy_net(next_states).max(1)[1].unsqueeze(1)
+                        next_q_values = target_net(next_states).gather(1, next_actions).squeeze(1)
                         target_q_values = rewards + (GAMMA * next_q_values * (1 - dones))
 
-                    loss = nn.MSELoss()(q_values.squeeze(), target_q_values)
+                    loss = nn.SmoothL1Loss()(q_values.squeeze(), target_q_values)
                     optimizer.zero_grad()
                     loss.backward()
                     optimizer.step()
