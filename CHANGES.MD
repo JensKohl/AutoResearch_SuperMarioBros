@@ -522,5 +522,12 @@ network is already good enough that the agent finishes the level
 learning. Standard DQN papers (Mnih) use 2.5e-4 with RMSprop; modern Adam-
 based runs typically use 1e-4 to 5e-5 — both within the band.
 
+**Result:** `total_reward=301`, `max_x_dist=301`, `score=0`, `flag_get=False`.
+**-1433 vs Exp19 — discarded.** Halving LR slowed learning enough that the
+greedy snapshot we saved was from very early in training (when ε was high,
+so the metric was probably driven by random luck), and that snapshot had no
+real policy yet. Confirms the "Exp9-Exp19 stack is at a sharp ridge" pattern:
+even slowing the optimizer breaks it.
+
 
 
