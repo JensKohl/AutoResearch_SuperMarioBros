@@ -406,3 +406,21 @@ but the same weights are clearly stronger than whatever the loop happened to
 land on at minute 5. Clear evidence that final-weights snapshotting was leaving
 performance on the table. New foundation.
 
+## Exp20 — Snapshot filter: only after ε has decayed (ε < 0.75)
+
+**What changed:** The best-snapshot update in Exp19 now requires
+`eps_threshold < 0.75` in addition to beating the metric. Early high-exploration
+episodes can no longer set the snapshot.
+
+**Why:** Exp19 logged `saved_snapshot_metric=19157` (a flag-completing episode),
+but the saved policy only achieved `total_reward=1734` in greedy evaluation.
+Likely explanation: the snapshotted episode finished the level *because* of
+lucky ε-greedy actions, not because the underlying greedy policy was strong.
+We want snapshots from a regime where the agent's training behaviour is closer
+to what `evaluate.py` measures (deterministic greedy). With `EPS_DECAY=50000`
+and ~20k steps per run, ε decays as `0.02 + 0.98·exp(-steps/50000)` — at step
+~14k that's about 0.74, so the threshold 0.75 selects the back roughly-half of
+training, where the greedy actions dominate ε-greedy ones.
+
+
+

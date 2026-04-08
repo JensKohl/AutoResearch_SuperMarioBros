@@ -309,10 +309,14 @@ def train():
                     break
 
             total_rewards.append(episode_reward)
-            # Snapshot the model after any episode that beats our best
-            # eval-aligned proxy (score + max_x_dist), matching evaluate.py.
+            # Snapshot only after ε has decayed enough that the policy is
+            # being trained "in the regime it'll be evaluated in" — Exp19
+            # showed that lucky ε-greedy episodes can produce metrics the
+            # greedy policy can't reproduce in evaluation. With EPS_DECAY=50k
+            # and ~20k steps per run, ε ends near 0.68, so 0.75 selects the
+            # back ~half of training.
             episode_metric = episode_last_score + episode_max_x
-            if episode_metric > best_snapshot_metric:
+            if eps_threshold < 0.75 and episode_metric > best_snapshot_metric:
                 best_snapshot_metric = episode_metric
                 best_snapshot_state = {k: v.detach().cpu().clone() for k, v in policy_net.state_dict().items()}
             gpu_temp = get_gpu_temp()
