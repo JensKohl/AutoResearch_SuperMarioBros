@@ -1304,3 +1304,25 @@ encode Q-relevant information in addition to policy-relevant info. With
 advantages as Q-targets (O(1) scale), the Q-head gradient magnitude is
 comparable to the policy/entropy/value losses, so interference should be limited.
 
+**Result:** total_reward = 795 (max_x=595, score=200). Worse total than Exp57
+(1435). Distance improved (595 vs 434) but score dropped (200 vs 1000). The
+shared features shifted toward navigation-useful representations, hurting
+score-farming behavior. Net total is worse. Reverting.
+
+## Exp61 — PPO + DQN Q-head: TD bootstrapping with target network
+
+**What changed:**
+- Added `target_q_head` (deepcopy of q_head, no grad)
+- Removed advantage-based Q-loss from PPO update
+- Added DQN TD Q-head update after PPO: Q(s,a) ← r + γ*max_a'Q_target(s')
+- TD targets normalized by abs mean (O(1) scale), Huber loss
+- Target Q-head soft-updated every 5 rollouts (τ=0.01)
+- Store next_states in rollout for TD update
+
+**Why:** The fundamental issue: PPO return-based Q-head trains the agent to
+predict "how good was this trajectory", not "what is the best action here".
+DQN's TD bootstrapping trains Q(s,a) = r + γ*max_a'Q(s'), which propagates
+OPTIMAL values backward from reward states. argmax(Q_TD) directly gives the
+greedy optimal action — the same property DQN's greedy eval relies on.
+This is the principled fix to the PPO/DQN eval mismatch.
+

@@ -1,5 +1,6 @@
 import time
 import subprocess
+import copy
 import gym_super_mario_bros
 from nes_py.wrappers import JoypadSpace
 import shimmy
@@ -247,6 +248,10 @@ def train():
     n_actions = env.action_space.n
     net = ActorCritic(n_actions).to(device)
     optimizer = optim.Adam(net.parameters(), lr=LR, eps=1e-5)
+    # Target Q-head for DQN-style bootstrapping
+    target_q_head = copy.deepcopy(net.q_head)
+    target_q_head.requires_grad_(False)
+    target_q_update_counter = 0
 
     start_time = time.time()
     total_rewards = []
@@ -272,6 +277,7 @@ def train():
         while time.time() - start_time < TIME_BUDGET:
             # ---- Collect N_STEPS rollout ----
             rollout_states = []
+            rollout_next_states = []
             rollout_actions = []
             rollout_log_probs = []
             rollout_values = []
@@ -287,6 +293,7 @@ def train():
                 done = terminated or truncated
 
                 rollout_states.append(state)
+                rollout_next_states.append(next_state)
                 rollout_actions.append(action)
                 rollout_log_probs.append(log_prob.item())
                 rollout_values.append(value.item())
@@ -366,17 +373,38 @@ def train():
                     policy_loss = -torch.min(surr1, surr2).mean()
                     value_loss = VALUE_COEF * F.mse_loss(values, mb_returns.detach())
                     entropy_loss = -ENTROPY_COEF * entropy.mean()
-                    # Q-head: advantage targets, non-detached (let gradient update features too)
-                    # With advantages O(1), gradient is comparable to policy/value losses
-                    q_pred = net.q_head(net.fc(net.conv(mb_states).view(len(mb_states), -1)))
-                    q_loss = F.mse_loss(q_pred.gather(1, mb_actions.unsqueeze(1)).squeeze(1),
-                                        mb_advantages.detach())
-
-                    loss = policy_loss + value_loss + entropy_loss + q_loss
+                    loss = policy_loss + value_loss + entropy_loss
                     optimizer.zero_grad()
                     loss.backward()
                     torch.nn.utils.clip_grad_norm_(net.parameters(), MAX_GRAD_NORM)
                     optimizer.step()
+
+            # ---- DQN Q-head update with TD bootstrapping ----
+            next_states_arr = np.array(rollout_next_states, dtype=np.float32) / 255.0
+            next_states_t = torch.FloatTensor(next_states_arr).to(device)
+            with torch.no_grad():
+                next_feats = net.fc(net.conv(next_states_t).view(len(next_states_t), -1))
+                next_q = target_q_head(next_feats)
+                td_raw = rewards_t + GAMMA * (1 - dones_t) * next_q.max(dim=1)[0]
+                # Normalize to O(1) for stable MSE training
+                td_targets = td_raw / (td_raw.abs().mean() + 1e-8)
+
+            dqn_idx = np.arange(N_STEPS)
+            np.random.shuffle(dqn_idx)
+            for start in range(0, N_STEPS, MINI_BATCH):
+                mb = dqn_idx[start:start + MINI_BATCH]
+                with torch.no_grad():
+                    q_feats = net.fc(net.conv(states_t[mb]).view(len(mb), -1))
+                q_pred = net.q_head(q_feats).gather(1, actions_t[mb].unsqueeze(1)).squeeze(1)
+                q_td_loss = F.huber_loss(q_pred, td_targets[mb].detach())
+                optimizer.zero_grad()
+                q_td_loss.backward()
+                optimizer.step()
+            # Soft-update target Q-head every 5 rollouts
+            target_q_update_counter += 1
+            if target_q_update_counter % 5 == 0:
+                for p, tp in zip(net.q_head.parameters(), target_q_head.parameters()):
+                    tp.data.copy_(0.99 * tp.data + 0.01 * p.data)
 
             # ---- Greedy probe every 5 rollouts ----
             n_rollouts += 1
