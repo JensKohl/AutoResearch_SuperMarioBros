@@ -23,7 +23,7 @@ GAMMA = 0.99
 GAE_LAMBDA = 0.95
 CLIP_EPS = 0.1
 VALUE_COEF = 0.5
-ENTROPY_COEF = 0.01
+ENTROPY_COEF = 0.05  # higher entropy bonus prevents policy collapse
 LR = 2.5e-4
 MAX_GRAD_NORM = 0.5
 N_STEPS = 128    # env steps per rollout
@@ -143,7 +143,22 @@ class FrameSkip(gym.Wrapper):
         return obs, total_reward, terminated, truncated, info
 
 
-# --- Actor-Critic Network ---
+# --- DQN stub: required by evaluate.py which imports and instantiates DQN ---
+class DQN(nn.Module):
+    def __init__(self, n_actions):
+        super().__init__()
+        self.conv = nn.Sequential(
+            nn.Conv2d(4, 32, kernel_size=8, stride=4), nn.ReLU(),
+            nn.Conv2d(32, 64, kernel_size=4, stride=2), nn.ReLU(),
+            nn.Conv2d(64, 64, kernel_size=3, stride=1), nn.ReLU()
+        )
+        self.fc = nn.Sequential(nn.Linear(3136, 512), nn.ReLU(), nn.Linear(512, n_actions))
+
+    def forward(self, x):
+        return self.fc(self.conv(x).view(x.size(0), -1))
+
+
+# --- Actor-Critic Network for PPO training ---
 class ActorCritic(nn.Module):
     def __init__(self, n_actions):
         super().__init__()
@@ -345,8 +360,18 @@ def train():
     finally:
         env.close()
         os.makedirs("MODELS", exist_ok=True)
-        save_state = best_snapshot_state if best_snapshot_state is not None else net.state_dict()
-        torch.save(save_state, "MODELS/model.pt")
+        # evaluate.py imports DQN and loads state_dict — map ActorCritic
+        # policy head into DQN format so eval works correctly.
+        ac_state = best_snapshot_state if best_snapshot_state is not None else {k: v.cpu() for k, v in net.state_dict().items()}
+        dqn_for_eval = DQN(n_actions)
+        dqn_for_eval.conv.load_state_dict(
+            {k.replace('conv.', ''): v for k, v in ac_state.items() if k.startswith('conv.')})
+        # ActorCritic fc[0] → DQN fc[0], ActorCritic policy → DQN fc[2]
+        dqn_for_eval.fc[0].weight.data.copy_(ac_state['fc.0.weight'])
+        dqn_for_eval.fc[0].bias.data.copy_(ac_state['fc.0.bias'])
+        dqn_for_eval.fc[2].weight.data.copy_(ac_state['policy.weight'])
+        dqn_for_eval.fc[2].bias.data.copy_(ac_state['policy.bias'])
+        torch.save(dqn_for_eval.state_dict(), "MODELS/model.pt")
         print(f"saved_snapshot_metric: {best_snapshot_metric:.1f}")
 
         training_seconds = time.time() - start_time
