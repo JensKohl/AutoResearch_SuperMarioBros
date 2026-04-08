@@ -563,5 +563,20 @@ means the warmup gets ~no PER benefit. Implementing PER without a sum-tree on
 this small budget probably doesn't pay off — the overhead beats the win.
 Reverted.
 
+## Exp26 — Disable rendering (RENDER=True → False)
+
+**What changed:** `RENDER = True → False`. With `RENDER=False`,
+`make_env(render=False)` passes `render_mode=None` to the shimmy compatibility
+wrapper, so the game window is not drawn each step.
+
+**Why:** This is the biggest unforced error in the whole stack. We've been
+rendering the SDL game window every single env step of training — that's a
+non-trivial cost on top of the actual emulator step (NES emulators run video
+output through PPU emulation, which is the most expensive part). Turning render
+off should give a measurable speedup on the env-step side, which translates
+directly into more env steps and more gradient updates within the 5 min budget.
+Rendering exists to let *humans* watch training; it has zero training benefit.
+Easy, large expected win.
+
 
 
