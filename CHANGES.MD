@@ -395,3 +395,14 @@ episodes is a free, informative proxy. Zero impact on training dynamics, no extr
 forward passes, only a copy and a write at episode boundaries — should be a strict
 upgrade or noise-neutral.
 
+**Result:** `total_reward=1734`, `max_x_dist=1434`, `score=300`, `flag_get=False`.
+**+135 over Exp15 — kept.** Two big things: (1) `max_x_dist` nearly doubled
+(899 → 1434), the persistent wall is finally broken; (2) the internal
+`saved_snapshot_metric` shows **19157** during training — that can only happen
+if a training episode actually finished the level (score 18000+ on a flag-get).
+The saved snapshot can't reliably *reproduce* the flag greedily (eval is
+deterministic, and some of that finish was almost certainly lucky ε-exploration),
+but the same weights are clearly stronger than whatever the loop happened to
+land on at minute 5. Clear evidence that final-weights snapshotting was leaving
+performance on the table. New foundation.
+
