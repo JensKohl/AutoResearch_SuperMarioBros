@@ -614,5 +614,23 @@ Next: try the opposite — RENDER=False but save the *final* model (drop the
 snapshot scheme entirely) to test whether the doubled training budget alone
 beats Exp19.
 
+## Exp28 — RENDER=False + drop best-snapshot, save final policy
+
+**What changed:** (a) `RENDER = False` (proven Exp26 throughput win); (b)
+removed the entire best-snapshot selection logic — `MODELS/model.pt` is now
+just `policy_net.state_dict()` at end of training. Also dropped now-unused
+`episode_max_x` / `episode_last_score` / `best_snapshot_metric` /
+`best_snapshot_state` bookkeeping.
+
+**Why:** Exp26 and Exp27 both regressed despite RENDER=False roughly
+doubling training episodes. The post-mortem in both cases blamed the
+snapshot scheme: with more episodes, an episode-max metric is more likely
+to be a lucky ε-greedy outlier whose underlying greedy policy is weak. By
+saving the *final* model we let the doubled training budget speak directly,
+without snapshot luck biasing what evaluate.py loads. If this still loses
+to Exp19's 1734, the snapshot scheme — not RENDER=False — was the actual
+source of Exp19's lead, and we'll know to bring it back. Simplification
+win even if results are flat: ~10 lines deleted.
+
 
 
