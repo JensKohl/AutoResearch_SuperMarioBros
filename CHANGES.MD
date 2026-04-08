@@ -371,3 +371,11 @@ Trade-off: wall-clock training time per episode is longer, so fewer env steps
 will fit in the budget — but given each replay batch is independent and GPU
 utilization is already low (115 MB peak), doubling updates is nearly free.
 
+**Result:** `total_reward=595`, `max_x_dist=595`, `score=0`, `flag_get=False`.
+**-1004 vs Exp15 — discarded.** "Nearly free" was wrong: doubling the
+optimizer.step() per env step roughly halves the env-steps-per-second the
+training loop achieves, which means *less* data over the same wall budget.
+Score collapsing back to 0 confirms the agent didn't get to interact much.
+With only ~10k env steps instead of ~20k, the effective experience budget is
+the binding constraint, not the gradient count. Reverted.
+
