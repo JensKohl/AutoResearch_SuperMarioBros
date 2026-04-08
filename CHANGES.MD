@@ -110,3 +110,19 @@ literature assume tens of millions of steps; in our tiny budget the extra
 un-trained parameters just add noise. Reverted train.py to Exp4; kept this section
 as permanent history.
 
+## Exp6 — 2-step returns (retry of Exp3 with gradient clipping)
+
+**What changed:** Re-introduced n-step returns with `N_STEP = 2` (Exp3 tried n=3,
+which blew up). The replay buffer now stores `(s_t, a_t, R = r_t + γ·r_{t+1},
+s_{t+2}, done)` and the Bellman target uses `γ^N = γ²` for the bootstrap. An
+n-step deque collects transitions inside the episode loop and flushes partial
+windows at episode end so nothing is lost.
+
+**Why:** Exp3 destabilised at n=3 — the distance-shaped reward (+2/pixel) summed
+over 3 frame-skipped steps made TD targets too large for the unclipped gradients.
+Two changes make the retry reasonable: (a) `N_STEP=2` is a smaller blow-up factor
+than 3, (b) gradient clipping at norm 10 (Exp4) should now absorb any remaining
+target spikes. N-step propagates reward `N` Bellman backups per update, which is
+exactly what short training budgets need (Rainbow lists n-step as a high-leverage
+addition, <https://arxiv.org/abs/1710.02298>). Starting conservative.
+

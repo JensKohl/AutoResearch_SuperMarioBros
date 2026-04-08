@@ -28,6 +28,7 @@ TARGET_UPDATE = 1000
 MEMORY_SIZE = 50000
 LR = 1e-4
 RENDER = True
+N_STEP = 2  # N-step returns: R = r_t + γ·r_{t+1} + ... , bootstrap with γ^N
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 warnings.filterwarnings("ignore")
@@ -202,6 +203,17 @@ def train():
     memory = ReplayBuffer(MEMORY_SIZE)
     steps_done = 0
 
+    # N-step transition buffer: holds the last N (s,a,r) tuples
+    nstep_buffer = deque(maxlen=N_STEP)
+
+    def push_nstep(next_state, done):
+        # Aggregate the oldest transition's N-step return and push to replay
+        R = 0.0
+        for i, (_, _, r_i) in enumerate(nstep_buffer):
+            R += (GAMMA ** i) * r_i
+        s0, a0, _ = nstep_buffer[0]
+        memory.push(s0, a0, R, next_state, done)
+
     start_time = time.time()
     total_rewards = []
 
@@ -212,6 +224,7 @@ def train():
     try:
         while time.time() - start_time < TIME_BUDGET:
             state, info = env.reset()
+            nstep_buffer.clear()
             episode_reward = 0
 
             for t in range(MAX_EPISODE_STEPS):
@@ -228,7 +241,9 @@ def train():
                 done = terminated or truncated
                 episode_reward += reward
 
-                memory.push(state, action, reward, next_state, done)
+                nstep_buffer.append((state, action, reward))
+                if len(nstep_buffer) == N_STEP:
+                    push_nstep(next_state, done)
                 state = next_state
 
                 current_time = info.get('time', 0)
@@ -252,7 +267,8 @@ def train():
                         # Double DQN: policy net picks action, target net evaluates it.
                         next_actions = policy_net(next_states).max(1)[1].unsqueeze(1)
                         next_q_values = target_net(next_states).gather(1, next_actions).squeeze(1)
-                        target_q_values = rewards + (GAMMA * next_q_values * (1 - dones))
+                        # N-step: reward is already R = sum γ^i r_i, bootstrap with γ^N
+                        target_q_values = rewards + ((GAMMA ** N_STEP) * next_q_values * (1 - dones))
 
                     loss = nn.SmoothL1Loss()(q_values.squeeze(), target_q_values)
                     optimizer.zero_grad()
@@ -264,6 +280,16 @@ def train():
                     target_net.load_state_dict(policy_net.state_dict())
 
                 if done or (time.time() - start_time >= TIME_BUDGET):
+                    # Flush the remaining partial n-step windows at episode end
+                    while len(nstep_buffer) > 0:
+                        nstep_buffer.popleft()
+                        if len(nstep_buffer) > 0:
+                            # Compute n-step return over whatever's left
+                            R = 0.0
+                            for i, (_, _, r_i) in enumerate(nstep_buffer):
+                                R += (GAMMA ** i) * r_i
+                            s0, a0, _ = nstep_buffer[0]
+                            memory.push(s0, a0, R, next_state, done)
                     break
 
             total_rewards.append(episode_reward)
