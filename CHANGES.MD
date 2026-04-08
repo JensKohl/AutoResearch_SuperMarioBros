@@ -1056,3 +1056,25 @@ directly optimize for the eval metric. Each greedy probe is 600 steps
 Reference: this approach is standard in PPO literature as "greedy evaluation
 checkpoint selection".
 
+**Result:** total_reward = 315 (max_x=315, score=0). No CUDA crash — the
+time budget fix worked (prevented crash at 634s). But greedy probe still
+only found x=315, overwritten by stochastic snapshot because they shared
+the same variable (greedy tracked best_greedy_x=315, then stochastic reached
+1794 and overwrote the snapshot). The greedy snapshot tracking was broken.
+Fixing in Exp48.
+
+## Exp48 — PPO fix: separate greedy snapshot + time guard
+
+**What changed:**
+- `best_greedy_snapshot` is now a separate variable from `best_snapshot_state` (stochastic)
+- In the finally block: prefer `best_greedy_snapshot` over stochastic snapshot for eval
+- Added time check before PPO update to prevent training past TIME_BUDGET (was running 634s on 600s budget)
+- Print which snapshot type is used when saving model
+
+**Why:** Exp47's greedy probe correctly found x=315, but then a stochastic
+episode at x=1794 replaced the greedy snapshot via a shared variable. The
+final saved model used the stochastic x=1794 weights, which eval still
+only got x=315 from. By keeping greedy and stochastic tracking separate and
+PREFERRING the greedy snapshot, we ensure eval uses the checkpoint that
+actually performed best greedily during training.
+

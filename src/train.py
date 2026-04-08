@@ -253,8 +253,9 @@ def train():
     best_score = 0
     best_time = 0
 
-    best_greedy_x = 0      # greedy probe best max_x
-    n_rollouts = 0         # count rollouts for probe scheduling
+    best_greedy_x = 0           # greedy probe best max_x
+    best_greedy_snapshot = None # separate from stochastic snapshot
+    n_rollouts = 0              # count rollouts for probe scheduling
 
     state, info = env.reset()
     steps_done = 0
@@ -314,6 +315,10 @@ def train():
 
                 if time.time() - start_time >= TIME_BUDGET:
                     break
+
+            # Skip PPO update if time budget exceeded
+            if time.time() - start_time >= TIME_BUDGET:
+                break
 
             # ---- Compute GAE ----
             with torch.no_grad():
@@ -380,8 +385,7 @@ def train():
                 state, info = env.reset()  # reset training state after probe
                 if g_max_x > best_greedy_x:
                     best_greedy_x = g_max_x
-                    best_snapshot_state = {k: v.detach().cpu().clone() for k, v in net.state_dict().items()}
-                    best_snapshot_metric = g_max_x
+                    best_greedy_snapshot = {k: v.detach().cpu().clone() for k, v in net.state_dict().items()}
                     print(f"  [greedy probe] new best greedy_x={g_max_x}")
 
     except KeyboardInterrupt:
@@ -389,9 +393,14 @@ def train():
     finally:
         env.close()
         os.makedirs("MODELS", exist_ok=True)
-        # evaluate.py imports DQN and loads state_dict — map ActorCritic
-        # policy head into DQN format so eval works correctly.
-        ac_state = best_snapshot_state if best_snapshot_state is not None else {k: v.cpu() for k, v in net.state_dict().items()}
+        # Prefer greedy probe snapshot (directly optimizes eval metric);
+        # fall back to stochastic snapshot if no greedy probe ran.
+        if best_greedy_snapshot is not None:
+            ac_state = best_greedy_snapshot
+            print(f"Using greedy snapshot (greedy_x={best_greedy_x}, stochastic_x={best_snapshot_metric:.0f})")
+        else:
+            ac_state = best_snapshot_state if best_snapshot_state is not None else {k: v.cpu() for k, v in net.state_dict().items()}
+            print(f"Using stochastic snapshot (max_x={best_snapshot_metric:.0f})")
         dqn_for_eval = DQN(n_actions)
         dqn_for_eval.conv.load_state_dict(
             {k.replace('conv.', ''): v for k, v in ac_state.items() if k.startswith('conv.')})
