@@ -1101,3 +1101,26 @@ N_STEPS=256, we get ~143 rollouts in 10 minutes. With N_STEPS=128, we get
 peaked, decisive policy. Minimal entropy (0.005) further encourages the
 policy to commit to confident actions rather than spreading probability.
 
+**Result:** total_reward = 314 (max_x=314, score=0). Still x=314. The
+core issue is structural: PPO policy logits ≠ Q-values. Even with near-zero
+entropy and 286 rollouts, argmax of policy logits doesn't produce a good
+greedy policy. Need explicit Q-value training.
+
+## Exp50 — PPO + Q-value head: explicit Q-values for greedy eval
+
+**What changed:**
+- Added `self.q_head = nn.Linear(512, n_actions)` to ActorCritic
+- During PPO update: train Q-head with `F.mse_loss(Q(s,a), returns)` where returns are PPO TD-λ targets
+- Greedy probe and eval snapshot use Q-head argmax instead of policy logits
+- Save logic: map q_head weights to DQN fc[2] (instead of policy.weight)
+- Q-head coefficient: 0.5 (same as value head)
+
+**Why:** 4 experiments confirmed PPO policy logits are poor for greedy eval
+(x=314 wall). DQN works greedily because Q(s,a) directly represents the
+value of taking action a in state s — argmax is the correct thing to do.
+PPO's policy logits are proportional to log-probabilities, not Q-values.
+By adding a Q-head trained on PPO returns (which ARE Q(s,a) estimates),
+we get the best of both worlds: PPO exploration + DQN-compatible greedy
+policy. The Q-head trains on `returns = advantages + values` which is the
+standard MC/TD estimate of Q(s,a).
+

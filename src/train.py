@@ -174,6 +174,7 @@ class ActorCritic(nn.Module):
         self.fc = nn.Sequential(nn.Linear(3136, 512), nn.ReLU())
         self.policy = nn.Linear(512, n_actions)  # action logits
         self.value = nn.Linear(512, 1)           # state value
+        self.q_head = nn.Linear(512, n_actions)  # per-action Q-values for greedy eval
 
         # Kaiming init for conv, orthogonal for FC/output heads
         for m in self.conv.modules():
@@ -188,11 +189,18 @@ class ActorCritic(nn.Module):
         nn.init.zeros_(self.policy.bias)
         nn.init.orthogonal_(self.value.weight, gain=1.0)
         nn.init.zeros_(self.value.bias)
+        nn.init.orthogonal_(self.q_head.weight, gain=1.0)
+        nn.init.zeros_(self.q_head.bias)
 
     def forward(self, x):
         features = self.conv(x).view(x.size(0), -1)
         h = self.fc(features)
         return self.policy(h), self.value(h)
+
+    def q_values(self, x):
+        features = self.conv(x).view(x.size(0), -1)
+        h = self.fc(features)
+        return self.q_head(h)
 
     def act(self, x):
         """Sample action and return (action, log_prob, value)."""
@@ -358,8 +366,12 @@ def train():
                     policy_loss = -torch.min(surr1, surr2).mean()
                     value_loss = VALUE_COEF * F.mse_loss(values, mb_returns.detach())
                     entropy_loss = -ENTROPY_COEF * entropy.mean()
+                    # Q-head: fit per-action Q-values to PPO returns (for greedy eval)
+                    q_pred = net.q_head(net.fc(net.conv(mb_states).view(len(mb_states), -1)))
+                    q_loss = 0.5 * F.mse_loss(q_pred.gather(1, mb_actions.unsqueeze(1)).squeeze(1),
+                                               mb_returns.detach())
 
-                    loss = policy_loss + value_loss + entropy_loss
+                    loss = policy_loss + value_loss + entropy_loss + q_loss
                     optimizer.zero_grad()
                     loss.backward()
                     torch.nn.utils.clip_grad_norm_(net.parameters(), MAX_GRAD_NORM)
@@ -374,9 +386,7 @@ def train():
                 with torch.no_grad():
                     for _ in range(600):
                         g_tensor = torch.FloatTensor(g_state).unsqueeze(0).to(device) / 255.0
-                        logits, _ = net.forward(g_tensor)
-                        logits = torch.clamp(logits, -10.0, 10.0)
-                        g_action = logits.argmax(dim=1).item()
+                        g_action = net.q_values(g_tensor).argmax(dim=1).item()
                         g_state, _, g_term, g_trunc, g_info = env.step(g_action)
                         g_max_x = max(g_max_x, g_info.get('x_pos', 0))
                         if g_term or g_trunc:
@@ -404,11 +414,11 @@ def train():
         dqn_for_eval = DQN(n_actions)
         dqn_for_eval.conv.load_state_dict(
             {k.replace('conv.', ''): v for k, v in ac_state.items() if k.startswith('conv.')})
-        # ActorCritic fc[0] → DQN fc[0], ActorCritic policy → DQN fc[2]
+        # ActorCritic fc[0] → DQN fc[0], ActorCritic q_head → DQN fc[2]
         dqn_for_eval.fc[0].weight.data.copy_(ac_state['fc.0.weight'])
         dqn_for_eval.fc[0].bias.data.copy_(ac_state['fc.0.bias'])
-        dqn_for_eval.fc[2].weight.data.copy_(ac_state['policy.weight'])
-        dqn_for_eval.fc[2].bias.data.copy_(ac_state['policy.bias'])
+        dqn_for_eval.fc[2].weight.data.copy_(ac_state['q_head.weight'])
+        dqn_for_eval.fc[2].bias.data.copy_(ac_state['q_head.bias'])
         torch.save(dqn_for_eval.state_dict(), "MODELS/model.pt")
         print(f"saved_snapshot_metric: {best_snapshot_metric:.1f}")
 
