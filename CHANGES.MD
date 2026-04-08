@@ -588,5 +588,21 @@ a single ε-greedy lucky episode to set a high snapshot metric that the greedy
 policy can't reproduce. The next experiment combines RENDER=False with a
 better snapshot heuristic. Reverted for now.
 
+## Exp27 — RENDER=False + skip first 10 episodes for snapshot
+
+**What changed:** Two changes together: (a) `RENDER = False` so the SDL game
+window is not drawn each step (Exp26); (b) the best-snapshot save now requires
+`len(total_rewards) > 10` so the first 10 episodes can never set the snapshot.
+
+**Why:** Exp26 proved RENDER=False roughly doubles the training speed (46
+episodes vs ~20-30) but the snapshot scheme started picking lucky outliers
+because there were more lottery tickets. Skipping the first 10 episodes
+ignores the highest-luck/lowest-skill range — those early episodes have ε
+near 1.0 so the metric is dominated by random actions, and any high-metric
+result is essentially noise. After 10 episodes the policy has at least had
+~5k env steps to develop, and any high metric is more likely to reflect real
+greedy capability. Cheap, addresses the observed failure mode of Exp26
+directly.
+
 
 
