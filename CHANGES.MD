@@ -475,5 +475,15 @@ they're produced *exactly* the same way. Cost: ~20% of training episodes do
 no exploration, so the replay buffer gets slightly less diverse. Worth it if
 the snapshot quality goes up.
 
+**Result:** `total_reward=800`, `max_x_dist=700`, `score=100`, `flag_get=False`.
+**-934 vs Exp19 — discarded.** Validation rollouts measure greedy quality on
+the *training* env (random reset state), but `evaluate.py` uses fixed seeds
+from `EVAL_SEEDS` in constants — a different world. So even an "honest"
+greedy validation metric in training doesn't predict eval performance. On top
+of that, 20% of episodes contributing zero exploration noticeably starved the
+replay buffer. Reverted. Lesson: snapshot selection is fundamentally limited
+without an in-distribution validation signal — we can only optimize for the
+*expected* greedy reward, which is what Exp19 already does.
+
 
 
