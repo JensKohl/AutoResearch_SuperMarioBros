@@ -123,8 +123,6 @@ class DistanceReward(gym.Wrapper):
         reward -= 0.1
         if info.get('flag_get', False):
             reward += 1000.0
-        elif terminated or truncated:
-            reward -= 25.0  # death penalty — discourage self-destruction
         return obs, reward, terminated, truncated, info
 
 

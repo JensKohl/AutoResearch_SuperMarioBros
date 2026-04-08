@@ -245,3 +245,11 @@ worse than surviving" without overwhelming the positive distance signal. Notably
 this does not affect the flag case, so the +1000 flag bonus is still the
 dominant objective. Minimal code change; orthogonal to all prior experiments.
 
+**Result:** `total_reward=1284`, `max_x_dist=684`, `score=600`, `flag_get=False`.
+**-215 vs Exp9 — discarded.** Same score (600) but less distance (684 vs 899).
+Hypothesis: in an ε-greedy agent that's still exploring ~60% of the time, death
+is often caused by *exploration*, not by a considered decision. Penalising it
+punishes the random actions that were our main source of useful data. The
+heuristic only pays off later when the agent has committed to a greedy policy,
+which we don't reach in 5 min. Reverted.
+
