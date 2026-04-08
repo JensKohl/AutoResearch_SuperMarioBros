@@ -529,5 +529,28 @@ so the metric was probably driven by random luck), and that snapshot had no
 real policy yet. Confirms the "Exp9-Exp19 stack is at a sharp ridge" pattern:
 even slowing the optimizer breaks it.
 
+## Exp25 — Prioritized Experience Replay (proportional, α=0.6, β=0.4)
+
+**What changed:** Replaced the uniform `ReplayBuffer` with a
+`PrioritizedReplayBuffer` that samples transitions proportional to
+`priority^α` and corrects the bias with importance-sampling weights
+`(N·P_i)^(-β)`. New transitions get max priority (so they're seen at least
+once). After each gradient step, the sampled transitions' priorities are
+updated to `|td_error| + 1e-6`. The loss uses element-wise smooth-L1 weighted
+by the IS weights. No sum tree — for our 50k buffer, `np.random.choice`
+with the priority array is fast enough.
+
+**Why:** The training reaches the flag occasionally (Exp19's
+`saved_snapshot_metric=19157`), but the rare obstacle-crossing transitions
+are drowned out by 50k mundane "running right" transitions when sampled
+uniformly. PER (Schaul et al. 2016, <https://arxiv.org/abs/1511.05952>)
+focuses learning on transitions with high TD error — exactly the rare ones
+where the network's current Q is wrong, which includes both novel obstacle
+crossings and any policy improvements. This is the canonical Rainbow trick
+for short training budgets and is the most likely lever to push the
+greedy policy past Exp19's 1734 ceiling. α=0.6 / β=0.4 are the values from
+the original paper (I keep β fixed rather than annealing — too short a
+budget for annealing to matter).
+
 
 
