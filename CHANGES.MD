@@ -963,6 +963,19 @@ intend. Using only our clean shaped reward removes the noise: every step
 gives exactly `(x_diff * 2.0) - 0.1`, with +1000 for flag_get. Cleaner
 signal → potentially more stable Q-learning.
 
+**Result:** total_reward = 834 (max_x=434, score=400). Loses time urgency
+and death penalty signals from base game reward. Reverted.
+
+## Exp45 — Dueling DQN with 256-unit streams (same param count as original)
+
+**What changed:** Dueling DQN with 256-unit value/advantage streams.
+Total FC params ≈ original 512-unit head: 2×(3136×256) ≈ 1.6M.
+Q = V(s) + A(s,a) - mean_a[A(s,a)].
+
+**Why:** Exp43 (512-unit streams, double params) got 998, reached x=898,
+but VRAM 147MB. With 256-unit streams total param count matches Exp19,
+preserving training speed/VRAM while keeping the value-advantage separation.
+
 ## Exp42 — AMSGrad Adam variant
 
 **What changed:** `optim.Adam(params, lr=LR)` → `optim.Adam(params, lr=LR, amsgrad=True)`.
