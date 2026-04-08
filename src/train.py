@@ -273,7 +273,7 @@ def train():
 
                 # At midpoint: clear replay buffer so the now-smarter policy
                 # re-fills it with higher-quality experiences
-                if not buffer_reset_done and (time.time() - start_time) >= TIME_BUDGET / 2:
+                if not buffer_reset_done and (time.time() - start_time) >= TIME_BUDGET * 0.4:
                     # Keep top-5000 highest-reward transitions; discard the rest
                     top_k = sorted(memory.buffer, key=lambda x: x[2], reverse=True)[:5000]
                     memory = ReplayBuffer(MEMORY_SIZE)
