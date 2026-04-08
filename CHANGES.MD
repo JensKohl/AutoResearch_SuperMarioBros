@@ -231,3 +231,17 @@ it keeps supplying diverse transitions even in the last third of training. The
 rule of thumb "EPS_DECAY ≈ total_steps" from long-run Atari does not apply when
 the network needs the last third of training just as much for data as for exploit.
 
+## Exp12 — Death penalty (-25 on non-flag terminations)
+
+**What changed:** In `DistanceReward.step`, if the episode ends without
+`flag_get=True`, subtract 25 from the step's reward.
+
+**Why:** Without a death penalty, from the agent's perspective death is just
+"episode stops yielding more reward" — it's not actively *bad*, only *neutral*,
+relative to standing still. This makes it easy for an early policy to learn
+"jump into pit" as a fast reset. A modest penalty (-25 is standard in Mario RL
+literature; compare ~50 pixels of forward distance reward) teaches "dying is
+worse than surviving" without overwhelming the positive distance signal. Notably
+this does not affect the flag case, so the +1000 flag bonus is still the
+dominant objective. Minimal code change; orthogonal to all prior experiments.
+
