@@ -6,11 +6,11 @@ import shimmy
 import gymnasium as gym
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 import torch.optim as optim
 import numpy as np
 import cv2
 import os
-import random
 from collections import deque
 import sys
 import warnings
@@ -18,18 +18,18 @@ import warnings
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from src.constants import TIME_BUDGET, MAX_EPISODE_STEPS, PRO_MOVEMENT
 
-# Hyperparameters
-BATCH_SIZE = 128
+# PPO Hyperparameters
 GAMMA = 0.99
-EPS_START = 1.0
-EPS_END = 0.02
-EPS_DECAY = 50000
-TARGET_UPDATE = 1000
-MEMORY_SIZE = 50000
-LR = 1e-4
+GAE_LAMBDA = 0.95
+CLIP_EPS = 0.1
+VALUE_COEF = 0.5
+ENTROPY_COEF = 0.01
+LR = 2.5e-4
+MAX_GRAD_NORM = 0.5
+N_STEPS = 128    # env steps per rollout
+N_EPOCHS = 4     # PPO update epochs per rollout
+MINI_BATCH = 64  # minibatch size
 RENDER = True
-N_STEP = 2  # N-step returns: R = r_t + γ·r_{t+1} + ... , bootstrap with γ^N
-LEARN_START = 1000  # wait until replay buffer has this many transitions before training
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 warnings.filterwarnings("ignore")
@@ -143,11 +143,11 @@ class FrameSkip(gym.Wrapper):
         return obs, total_reward, terminated, truncated, info
 
 
-# --- Dueling DQN (256-unit streams, same total param count as original) ---
-class DQN(nn.Module):
+# --- Actor-Critic Network ---
+class ActorCritic(nn.Module):
     def __init__(self, n_actions):
-        super(DQN, self).__init__()
-        # Input: 4 stacked grayscale frames (4x84x84)
+        super().__init__()
+        # Shared conv backbone (same as DQN)
         self.conv = nn.Sequential(
             nn.Conv2d(4, 32, kernel_size=8, stride=4),
             nn.ReLU(),
@@ -156,40 +156,58 @@ class DQN(nn.Module):
             nn.Conv2d(64, 64, kernel_size=3, stride=1),
             nn.ReLU()
         )
-        # 256-unit streams: total params ≈ original 512-unit single stream.
-        # Q(s,a) = V(s) + A(s,a) - mean_a[A(s,a)]
-        self.value = nn.Sequential(nn.Linear(3136, 256), nn.ReLU(), nn.Linear(256, 1))
-        self.advantage = nn.Sequential(nn.Linear(3136, 256), nn.ReLU(), nn.Linear(256, n_actions))
-        # Kaiming init for ReLU layers
-        for m in self.modules():
-            if isinstance(m, (nn.Conv2d, nn.Linear)):
+        self.fc = nn.Sequential(nn.Linear(3136, 512), nn.ReLU())
+        self.policy = nn.Linear(512, n_actions)  # action logits
+        self.value = nn.Linear(512, 1)           # state value
+
+        # Kaiming init for conv, orthogonal for FC/output heads
+        for m in self.conv.modules():
+            if isinstance(m, nn.Conv2d):
                 nn.init.kaiming_normal_(m.weight, nonlinearity='relu')
-                if m.bias is not None:
-                    nn.init.zeros_(m.bias)
+                nn.init.zeros_(m.bias)
+        for m in self.fc.modules():
+            if isinstance(m, nn.Linear):
+                nn.init.orthogonal_(m.weight, gain=np.sqrt(2))
+                nn.init.zeros_(m.bias)
+        nn.init.orthogonal_(self.policy.weight, gain=0.01)
+        nn.init.zeros_(self.policy.bias)
+        nn.init.orthogonal_(self.value.weight, gain=1.0)
+        nn.init.zeros_(self.value.bias)
 
     def forward(self, x):
-        features = self.conv(x)
-        features = features.view(features.size(0), -1)
-        v = self.value(features)
-        a = self.advantage(features)
-        return v + (a - a.mean(dim=1, keepdim=True))
+        features = self.conv(x).view(x.size(0), -1)
+        h = self.fc(features)
+        return self.policy(h), self.value(h)
+
+    def act(self, x):
+        """Sample action and return (action, log_prob, value)."""
+        logits, value = self.forward(x)
+        dist = torch.distributions.Categorical(logits=logits)
+        action = dist.sample()
+        return action.item(), dist.log_prob(action), value.squeeze(-1)
+
+    def evaluate(self, states, actions):
+        """For PPO update: returns log_probs, values, entropy."""
+        logits, values = self.forward(states)
+        dist = torch.distributions.Categorical(logits=logits)
+        log_probs = dist.log_prob(actions)
+        entropy = dist.entropy()
+        return log_probs, values.squeeze(-1), entropy
 
 
-# --- Replay Buffer ---
-class ReplayBuffer:
-    def __init__(self, capacity):
-        self.buffer = deque(maxlen=capacity)
-
-    def push(self, state, action, reward, next_state, done):
-        self.buffer.append((state, action, reward, next_state, done))
-
-    def sample(self, batch_size):
-        batch = random.sample(self.buffer, batch_size)
-        states, actions, rewards, next_states, dones = zip(*batch)
-        return np.array(states), actions, rewards, np.array(next_states), dones
-
-    def __len__(self):
-        return len(self.buffer)
+def compute_gae(rewards, values, dones, next_value, gamma, gae_lambda):
+    """Compute Generalized Advantage Estimation."""
+    advantages = torch.zeros_like(rewards)
+    last_gae = 0.0
+    for t in reversed(range(len(rewards))):
+        if t == len(rewards) - 1:
+            next_v = next_value
+        else:
+            next_v = values[t + 1]
+        delta = rewards[t] + gamma * next_v * (1 - dones[t]) - values[t]
+        last_gae = delta + gamma * gae_lambda * (1 - dones[t]) * last_gae
+        advantages[t] = last_gae
+    return advantages
 
 
 # --- Training Loop ---
@@ -202,62 +220,53 @@ def train():
     env = FrameStack(env, k=4)
 
     n_actions = env.action_space.n
-    policy_net = DQN(n_actions).to(device)
-    target_net = DQN(n_actions).to(device)
-    target_net.load_state_dict(policy_net.state_dict())
-    target_net.eval()
-
-    optimizer = optim.Adam(policy_net.parameters(), lr=LR)
-    memory = ReplayBuffer(MEMORY_SIZE)
-    steps_done = 0
-
-    # N-step transition buffer: holds the last N (s,a,r) tuples
-    nstep_buffer = deque(maxlen=N_STEP)
-
-    def push_nstep(next_state, done):
-        # Aggregate the oldest transition's N-step return and push to replay
-        R = 0.0
-        for i, (_, _, r_i) in enumerate(nstep_buffer):
-            R += (GAMMA ** i) * r_i
-        s0, a0, _ = nstep_buffer[0]
-        memory.push(s0, a0, R, next_state, done)
+    net = ActorCritic(n_actions).to(device)
+    optimizer = optim.Adam(net.parameters(), lr=LR, eps=1e-5)
 
     start_time = time.time()
     total_rewards = []
+    episode_reward = 0
+    episode_max_x = 0
+
+    best_max_x = 0
+    best_snapshot_state = None
+    best_snapshot_metric = -float('inf')
 
     best_total_reward = -float('inf')
     best_score = 0
     best_time = 0
-    # Track best snapshot by eval-aligned proxy: score + max_x_dist per episode.
-    best_snapshot_metric = -float('inf')
-    best_snapshot_state = None
+
+    state, info = env.reset()
+    steps_done = 0
 
     try:
         while time.time() - start_time < TIME_BUDGET:
-            state, info = env.reset()
-            nstep_buffer.clear()
-            episode_reward = 0
-            episode_max_x = 0
-            episode_last_score = 0
+            # ---- Collect N_STEPS rollout ----
+            rollout_states = []
+            rollout_actions = []
+            rollout_log_probs = []
+            rollout_values = []
+            rollout_rewards = []
+            rollout_dones = []
 
-            for t in range(MAX_EPISODE_STEPS):
-                eps_threshold = EPS_END + (EPS_START - EPS_END) * np.exp(-1. * steps_done / EPS_DECAY)
-                if random.random() > eps_threshold:
-                    with torch.no_grad():
-                        state_tensor = torch.FloatTensor(state).unsqueeze(0).to(device) / 255.0
-                        action = policy_net(state_tensor).max(1)[1].view(1, 1).item()
-                else:
-                    action = env.action_space.sample()
-                steps_done += 1
+            for _ in range(N_STEPS):
+                state_tensor = torch.FloatTensor(state).unsqueeze(0).to(device) / 255.0
+                with torch.no_grad():
+                    action, log_prob, value = net.act(state_tensor)
 
                 next_state, reward, terminated, truncated, info = env.step(action)
                 done = terminated or truncated
-                episode_reward += reward
 
-                nstep_buffer.append((state, action, reward))
-                if len(nstep_buffer) == N_STEP:
-                    push_nstep(next_state, done)
-                state = next_state
+                rollout_states.append(state)
+                rollout_actions.append(action)
+                rollout_log_probs.append(log_prob.item())
+                rollout_values.append(value.item())
+                rollout_rewards.append(reward)
+                rollout_dones.append(float(done))
+
+                episode_reward += reward
+                episode_max_x = max(episode_max_x, info.get('x_pos', 0))
+                steps_done += 1
 
                 current_time = info.get('time', 0)
                 current_score = info.get('score', 0)
@@ -267,68 +276,76 @@ def train():
                     best_score = current_score
                     best_time = current_time
 
-                # Track per-episode peak position and final score for snapshot selection
-                episode_max_x = max(episode_max_x, info.get('x_pos', 0))
-                episode_last_score = current_score
+                state = next_state
+                if done:
+                    total_rewards.append(episode_reward)
+                    episode_metric = episode_max_x
+                    if episode_metric > best_snapshot_metric:
+                        best_snapshot_metric = episode_metric
+                        best_snapshot_state = {k: v.detach().cpu().clone() for k, v in net.state_dict().items()}
+                    gpu_temp = get_gpu_temp()
+                    print(f"Episode {len(total_rewards):>3} | Reward: {episode_reward:>6.1f} | MaxX: {episode_max_x} | Steps: {steps_done} | GPU: {gpu_temp}°C")
+                    if gpu_temp >= MAX_GPU_TEMP:
+                        print(f"GPU temperature {gpu_temp}°C >= {MAX_GPU_TEMP}°C limit — stopping.")
+                        raise KeyboardInterrupt
+                    episode_reward = 0
+                    episode_max_x = 0
+                    state, info = env.reset()
 
-                if len(memory) >= LEARN_START:
-                    states, actions, rewards, next_states, dones = memory.sample(BATCH_SIZE)
-                    states = torch.FloatTensor(states).to(device) / 255.0
-                    actions = torch.LongTensor(actions).unsqueeze(1).to(device)
-                    rewards = torch.FloatTensor(rewards).to(device)
-                    next_states = torch.FloatTensor(next_states).to(device) / 255.0
-                    dones = torch.FloatTensor(dones).to(device)
-
-                    q_values = policy_net(states).gather(1, actions)
-                    with torch.no_grad():
-                        # Double DQN: policy net picks action, target net evaluates it.
-                        next_actions = policy_net(next_states).max(1)[1].unsqueeze(1)
-                        next_q_values = target_net(next_states).gather(1, next_actions).squeeze(1)
-                        # N-step: reward is already R = sum γ^i r_i, bootstrap with γ^N
-                        target_q_values = rewards + ((GAMMA ** N_STEP) * next_q_values * (1 - dones))
-
-                    loss = nn.SmoothL1Loss()(q_values.squeeze(), target_q_values)
-                    optimizer.zero_grad()
-                    loss.backward()
-                    torch.nn.utils.clip_grad_norm_(policy_net.parameters(), 10.0)
-                    optimizer.step()
-
-                if steps_done % TARGET_UPDATE == 0:
-                    target_net.load_state_dict(policy_net.state_dict())
-
-                if done or (time.time() - start_time >= TIME_BUDGET):
-                    # Flush the remaining partial n-step windows at episode end
-                    while len(nstep_buffer) > 0:
-                        nstep_buffer.popleft()
-                        if len(nstep_buffer) > 0:
-                            # Compute n-step return over whatever's left
-                            R = 0.0
-                            for i, (_, _, r_i) in enumerate(nstep_buffer):
-                                R += (GAMMA ** i) * r_i
-                            s0, a0, _ = nstep_buffer[0]
-                            memory.push(s0, a0, R, next_state, done)
+                if time.time() - start_time >= TIME_BUDGET:
                     break
 
-            total_rewards.append(episode_reward)
-            # Snapshot the model after any episode that beats our best
-            # eval-aligned proxy (score + max_x_dist), matching evaluate.py.
-            episode_metric = episode_last_score + episode_max_x
-            if episode_metric > best_snapshot_metric:
-                best_snapshot_metric = episode_metric
-                best_snapshot_state = {k: v.detach().cpu().clone() for k, v in policy_net.state_dict().items()}
-            gpu_temp = get_gpu_temp()
-            print(f"Episode {len(total_rewards):>3} | Reward: {episode_reward:>6.1f} | Epsilon: {eps_threshold:>5.3f} | Steps: {steps_done} | GPU: {gpu_temp}°C")
-            if gpu_temp >= MAX_GPU_TEMP:
-                print(f"GPU temperature {gpu_temp}°C >= {MAX_GPU_TEMP}°C limit — stopping training to cool down.")
-                break
+            # ---- Compute GAE ----
+            with torch.no_grad():
+                state_tensor = torch.FloatTensor(state).unsqueeze(0).to(device) / 255.0
+                _, next_value = net.forward(state_tensor)
+                next_value = next_value.squeeze().item()
+
+            rewards_t = torch.FloatTensor(rollout_rewards).to(device)
+            values_t = torch.FloatTensor(rollout_values).to(device)
+            dones_t = torch.FloatTensor(rollout_dones).to(device)
+
+            advantages = compute_gae(rewards_t, values_t, dones_t, next_value, GAMMA, GAE_LAMBDA)
+            returns = advantages + values_t
+            advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
+
+            # ---- PPO Update ----
+            states_arr = np.array(rollout_states, dtype=np.float32) / 255.0
+            states_t = torch.FloatTensor(states_arr).to(device)
+            actions_t = torch.LongTensor(rollout_actions).to(device)
+            old_log_probs_t = torch.FloatTensor(rollout_log_probs).to(device)
+
+            indices = np.arange(N_STEPS)
+            for _ in range(N_EPOCHS):
+                np.random.shuffle(indices)
+                for start in range(0, N_STEPS, MINI_BATCH):
+                    mb_idx = indices[start:start + MINI_BATCH]
+                    mb_states = states_t[mb_idx]
+                    mb_actions = actions_t[mb_idx]
+                    mb_old_log_probs = old_log_probs_t[mb_idx]
+                    mb_advantages = advantages[mb_idx]
+                    mb_returns = returns[mb_idx]
+
+                    log_probs, values, entropy = net.evaluate(mb_states, mb_actions)
+                    ratio = torch.exp(log_probs - mb_old_log_probs)
+                    surr1 = ratio * mb_advantages
+                    surr2 = torch.clamp(ratio, 1.0 - CLIP_EPS, 1.0 + CLIP_EPS) * mb_advantages
+                    policy_loss = -torch.min(surr1, surr2).mean()
+                    value_loss = VALUE_COEF * F.mse_loss(values, mb_returns.detach())
+                    entropy_loss = -ENTROPY_COEF * entropy.mean()
+
+                    loss = policy_loss + value_loss + entropy_loss
+                    optimizer.zero_grad()
+                    loss.backward()
+                    torch.nn.utils.clip_grad_norm_(net.parameters(), MAX_GRAD_NORM)
+                    optimizer.step()
 
     except KeyboardInterrupt:
         pass
     finally:
         env.close()
         os.makedirs("MODELS", exist_ok=True)
-        # Prefer the best snapshot if any episode improved on the running best.
-        save_state = best_snapshot_state if best_snapshot_state is not None else policy_net.state_dict()
+        save_state = best_snapshot_state if best_snapshot_state is not None else net.state_dict()
         torch.save(save_state, "MODELS/model.pt")
         print(f"saved_snapshot_metric: {best_snapshot_metric:.1f}")
 

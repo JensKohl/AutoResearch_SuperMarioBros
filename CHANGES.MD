@@ -928,6 +928,17 @@ converge to a better fixed-target solution before the next update.
 **Result:** total_reward = 595 (max_x=595, score=0). No improvement.
 Longer target stability doesn't help in our short budget. Reverted.
 
+## Exp42 — AMSGrad Adam variant
+
+**What changed:** `optim.Adam(params, lr=LR)` → `optim.Adam(params, lr=LR, amsgrad=True)`.
+
+**Why:** AMSGrad (Reddi et al. 2018) uses the running maximum of second
+moments in the denominator instead of the exponential moving average.
+This provides better convergence guarantees in non-convex settings by
+preventing the adaptive learning rate from increasing, which can cause
+oscillations. In short-budget RL training, this stability could help the
+policy converge more reliably to good solutions. One flag, zero risk.
+
 ## Exp43 — Dueling DQN (re-tested with full modern stack)
 
 **What changed:** DQN architecture gets dueling streams. After the 3-conv
@@ -975,16 +986,23 @@ Q = V(s) + A(s,a) - mean_a[A(s,a)].
 **Why:** Exp43 (512-unit streams, double params) got 998, reached x=898,
 but VRAM 147MB. With 256-unit streams total param count matches Exp19,
 preserving training speed/VRAM while keeping the value-advantage separation.
+(Experiment aborted before running — pivoting to PPO.)
 
-## Exp42 — AMSGrad Adam variant
+## Exp45 — PPO (Proximal Policy Optimization) — full algorithm switch
 
-**What changed:** `optim.Adam(params, lr=LR)` → `optim.Adam(params, lr=LR, amsgrad=True)`.
+**What changed:** Complete replacement of DQN with PPO:
+- `ActorCritic` network: shared conv backbone → policy head (logits) + value head
+- On-policy rollouts: collect N_STEPS=128 env steps, then update
+- GAE advantage estimation (λ=0.95, γ=0.99)
+- PPO clipped surrogate loss (ε=0.1) + value loss (coef=0.5) + entropy bonus (coef=0.01)
+- N_EPOCHS=4 passes per rollout, MINI_BATCH=64
+- No replay buffer (on-policy). LR=2.5e-4, orthogonal FC init.
+- Best-snapshot saved when episode_max_x improves.
 
-**Why:** AMSGrad (Reddi et al. 2018) uses the running maximum of second
-moments in the denominator instead of the exponential moving average.
-This provides better convergence guarantees in non-convex settings by
-preventing the adaptive learning rate from increasing, which can cause
-oscillations. In short-budget RL training, this stability could help the
-policy converge more reliably to good solutions. One flag, zero risk.
-
+**Why:** After 25 failed DQN variants, the learning dynamic itself may be
+the bottleneck. PPO directly optimizes the action distribution (policy
+gradient), rather than indirectly learning Q-values and taking argmax.
+The proximal constraint prevents destructive updates. The entropy bonus
+maintains exploration throughout training without epsilon tuning. PPO is
+known to work well on Mario-style games in the literature.
 
