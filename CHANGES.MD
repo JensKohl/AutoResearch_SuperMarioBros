@@ -273,3 +273,15 @@ training means fewer *exploit* episodes the net can learn its own greedy value
 from, and (2) the final saved model carries no benefit from the extra random
 probes since evaluate.py runs it greedily. Net loss. Reverted.
 
+## Exp14 — Smaller batch (128 → 64)
+
+**What changed:** `BATCH_SIZE = 128 → 64`. One number.
+
+**Why:** Exp10 established that our bottleneck is gradient-steps-per-second, not
+gradient variance: doubling the batch to 256 tanked the run. The natural next
+question is whether the reverse helps — halving the batch to 64 should roughly
+double the number of updates the optimizer gets in the same wall-clock time.
+Variance per update goes up, but with gradient clipping and n-step returns
+already smoothing things, the net should still be stable. If this wins, it's
+a pure throughput gain.
+
