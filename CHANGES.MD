@@ -422,5 +422,14 @@ and ~20k steps per run, ε decays as `0.02 + 0.98·exp(-steps/50000)` — at ste
 ~14k that's about 0.74, so the threshold 0.75 selects the back roughly-half of
 training, where the greedy actions dominate ε-greedy ones.
 
+**Result:** `total_reward=1509`, `max_x_dist=1509`, `score=0`, `flag_get=False`.
+**-225 vs Exp19 — discarded.** Interesting mixed result: `max_x_dist` is
+actually *higher* (1509 vs 1434) and `saved_snapshot_metric` dropped to 2776,
+which proves the filter did its job and selected a non-lucky episode. But
+score collapsed to 0, dragging total below Exp19. The interpretation is that
+ε-greedy lucky episodes were giving us *both* longer reaches *and* enemy
+stomps, and the strict greedy filter picks a snapshot that walks far but
+doesn't interact. Per the rule total_reward decides — reverted.
+
 
 
