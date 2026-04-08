@@ -1163,3 +1163,23 @@ for the Q-head. Also, the greedy probe was cut at 600 steps — if Mario
 gets to x=723 it's already past 600 steps, so extending to 1500 lets
 us capture the full episode and find the true greedy max_x.
 
+**Result:** total_reward = 535 (max_x=435, score=100). WORSE than Exp51
+(723). Higher entropy (0.01) hurts Q-head convergence — more diverse
+stochastic training but noisier Q-targets mean Q-head can't learn
+consistent action preferences. Reverting entropy to 0.005 (Exp51 base),
+keeping 1500-step probe, and adding dedicated Q-head optimizer.
+
+## Exp53 — PPO Q-head: dedicated optimizer + 10 extra update passes
+
+**What changed:** (Reverted to Exp51 entropy=0.005, probe extended to 1500)
+- Added `q_optimizer = optim.Adam(net.q_head.parameters(), lr=1e-3)` (dedicated, faster LR)
+- Added 10 extra Q-head update passes per rollout using `q_optimizer` (separate from PPO)
+- Greedy probe steps: 600 → 1500 (full episode coverage)
+
+**Why:** The Q-head in Exp51 trained only via the PPO optimizer (LR=1e-4),
+which is slow for a single linear layer. With a dedicated LR=1e-3 and 10
+extra passes per rollout (vs 4 PPO epochs), the Q-head fits the return
+surface much faster. Features remain detached so there's no PPO
+interference. 10 extra passes × 2 minibatches = 20 extra Q-head updates
+per rollout — enough for a linear layer to converge on normalized targets.
+
