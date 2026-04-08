@@ -379,3 +379,19 @@ Score collapsing back to 0 confirms the agent didn't get to interact much.
 With only ~10k env steps instead of ~20k, the effective experience budget is
 the binding constraint, not the gradient count. Reverted.
 
+## Exp19 — Save best snapshot, not final model
+
+**What changed:** During training we now track an eval-aligned per-episode metric
+`episode_last_score + episode_max_x` (this is exactly what `evaluate.py` returns
+for non-flag runs). After every episode, if the metric beats our running best,
+we deep-copy the policy net's state_dict to a CPU snapshot. At the end of training
+the saved `MODELS/model.pt` is the best-snapshot weights, not the final ones.
+
+**Why:** RL training is inherently noisy — the policy can be at peak skill mid-
+run and then drift. Saving the *final* weights leaves performance to chance. Most
+serious RL implementations save the best checkpoint by validation reward; we
+don't have a separate validation rollout, but the score+max_x signal from training
+episodes is a free, informative proxy. Zero impact on training dynamics, no extra
+forward passes, only a copy and a write at episode boundaries — should be a strict
+upgrade or noise-neutral.
+

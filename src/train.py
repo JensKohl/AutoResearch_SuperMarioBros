@@ -227,12 +227,17 @@ def train():
     best_total_reward = -float('inf')
     best_score = 0
     best_time = 0
+    # Track best snapshot by eval-aligned proxy: score + max_x_dist per episode.
+    best_snapshot_metric = -float('inf')
+    best_snapshot_state = None
 
     try:
         while time.time() - start_time < TIME_BUDGET:
             state, info = env.reset()
             nstep_buffer.clear()
             episode_reward = 0
+            episode_max_x = 0
+            episode_last_score = 0
 
             for t in range(MAX_EPISODE_STEPS):
                 eps_threshold = EPS_END + (EPS_START - EPS_END) * np.exp(-1. * steps_done / EPS_DECAY)
@@ -260,6 +265,10 @@ def train():
                     best_total_reward = current_total
                     best_score = current_score
                     best_time = current_time
+
+                # Track per-episode peak position and final score for snapshot selection
+                episode_max_x = max(episode_max_x, info.get('x_pos', 0))
+                episode_last_score = current_score
 
                 if len(memory) >= LEARN_START:
                     states, actions, rewards, next_states, dones = memory.sample(BATCH_SIZE)
@@ -300,6 +309,12 @@ def train():
                     break
 
             total_rewards.append(episode_reward)
+            # Snapshot the model after any episode that beats our best
+            # eval-aligned proxy (score + max_x_dist), matching evaluate.py.
+            episode_metric = episode_last_score + episode_max_x
+            if episode_metric > best_snapshot_metric:
+                best_snapshot_metric = episode_metric
+                best_snapshot_state = {k: v.detach().cpu().clone() for k, v in policy_net.state_dict().items()}
             gpu_temp = get_gpu_temp()
             print(f"Episode {len(total_rewards):>3} | Reward: {episode_reward:>6.1f} | Epsilon: {eps_threshold:>5.3f} | Steps: {steps_done} | GPU: {gpu_temp}°C")
             if gpu_temp >= MAX_GPU_TEMP:
@@ -311,7 +326,10 @@ def train():
     finally:
         env.close()
         os.makedirs("MODELS", exist_ok=True)
-        torch.save(policy_net.state_dict(), "MODELS/model.pt")
+        # Prefer the best snapshot if any episode improved on the running best.
+        save_state = best_snapshot_state if best_snapshot_state is not None else policy_net.state_dict()
+        torch.save(save_state, "MODELS/model.pt")
+        print(f"saved_snapshot_metric: {best_snapshot_metric:.1f}")
 
         training_seconds = time.time() - start_time
         print(f"training_seconds: {training_seconds:.1f}")
