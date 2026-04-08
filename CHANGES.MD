@@ -1288,3 +1288,19 @@ returns). With running stats, the normalization is CONSISTENT — Q(s,a)=+1.5
 always means the same "expected return level" regardless of when it was seen.
 This should produce more stable and accurate Q-values for greedy selection.
 
+**Result:** total_reward = 314 (max_x=314, score=0). Running stats start at
+(mean=0, std=1) which is a poor initial normalization — early rollout returns
+overwhelm the Q-head. Only 1 probe improvement found (x=314). Reverted.
+
+## Exp60 — PPO Q-head non-detached: gradient through features
+
+**What changed:** Removed `with torch.no_grad()` detach for Q-head features.
+Q-head gradient now flows through net.fc and net.conv, updating shared features.
+
+**Why:** With detached features, the Q-head is a simple linear probe on top of
+PPO features. PPO features are optimized for policy/value, not Q-value prediction.
+By allowing Q-head gradients through features, the shared conv+fc learns to
+encode Q-relevant information in addition to policy-relevant info. With
+advantages as Q-targets (O(1) scale), the Q-head gradient magnitude is
+comparable to the policy/entropy/value losses, so interference should be limited.
+
