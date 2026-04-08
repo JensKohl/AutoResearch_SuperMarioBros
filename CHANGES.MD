@@ -507,5 +507,20 @@ and propagation is much further), and despite gradient clipping it diverged
 into an "agent stands still" basin. The Exp19 sweet spot is genuinely
 narrow — even modest discount changes break it. Reverted.
 
+## Exp24 — Halve learning rate (1e-4 → 5e-5)
+
+**What changed:** `LR = 1e-4 → 5e-5`. One number.
+
+**Why:** Several recent failures (Exp21 soft target, Exp23 higher gamma) have
+been Q-divergence collapses, suggesting the value function is on the edge of
+instability. A smaller step size is the cheapest defense — each gradient
+update perturbs Q-values less, so the moving target chases the policy more
+gently. Risk: with only ~20k updates per run, halving LR halves the total
+parameter motion, so we might end the budget under-trained. But Exp19's
+network is already good enough that the agent finishes the level
+*occasionally* — we may not need more learning, just more *consistent*
+learning. Standard DQN papers (Mnih) use 2.5e-4 with RMSprop; modern Adam-
+based runs typically use 1e-4 to 5e-5 — both within the band.
+
 
 
