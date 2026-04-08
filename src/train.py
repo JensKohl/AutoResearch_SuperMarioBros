@@ -214,6 +214,8 @@ def train():
     best_total_reward = -float('inf')
     best_score = 0
     best_time = 0
+    best_x_pos_ever = 0
+    os.makedirs("MODELS", exist_ok=True)
 
     try:
         while time.time() - start_time < TIME_BUDGET:
@@ -272,8 +274,18 @@ def train():
                 # At midpoint: clear replay buffer so the now-smarter policy
                 # re-fills it with higher-quality experiences
                 if not buffer_reset_done and (time.time() - start_time) >= TIME_BUDGET / 2:
+                    # Keep top-5000 highest-reward transitions; discard the rest
+                    top_k = sorted(memory.buffer, key=lambda x: x[2], reverse=True)[:5000]
                     memory = ReplayBuffer(MEMORY_SIZE)
+                    for t in top_k:
+                        memory.buffer.append(t)
                     buffer_reset_done = True
+
+                if buffer_reset_done:
+                    current_x = info.get('x_pos', 0)
+                    if current_x > best_x_pos_ever:
+                        best_x_pos_ever = current_x
+                        torch.save(policy_net.state_dict(), "MODELS/model.pt")
 
                 if done or (time.time() - start_time >= TIME_BUDGET):
                     break
@@ -289,8 +301,9 @@ def train():
         pass
     finally:
         env.close()
-        os.makedirs("MODELS", exist_ok=True)
-        torch.save(policy_net.state_dict(), "MODELS/model.pt")
+        if best_x_pos_ever == 0:
+            os.makedirs("MODELS", exist_ok=True)
+            torch.save(policy_net.state_dict(), "MODELS/model.pt")
 
         training_seconds = time.time() - start_time
         print(f"training_seconds: {training_seconds:.1f}")
