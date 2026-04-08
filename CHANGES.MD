@@ -210,3 +210,16 @@ but the bigger batch roughly halved the number of gradient updates per wall
 second. In a 5-minute budget, wall-clock gradient steps are the binding
 constraint — not gradient variance. Smaller and faster wins here. Reverted.
 
+## Exp11 — Faster ε decay (50000 → 20000)
+
+**What changed:** `EPS_DECAY = 50000 → 20000`. One number.
+
+**Why:** The ε-greedy schedule decays as `ε_end + (ε_start - ε_end)·exp(-steps/EPS_DECAY)`.
+With `EPS_DECAY=50000` and a ~20k-step budget per run, at end of training
+`ε ≈ 0.02 + 0.98·exp(-20k/50k) ≈ 0.02 + 0.98·0.67 ≈ 0.68` — i.e. the agent is
+*still* acting randomly two-thirds of the time at the end of the run. That's
+fine for a multi-hour run, but in our 5-min budget it means the net never gets
+to trust its own policy. Setting `EPS_DECAY=20000` brings ε at end-of-run to
+`0.02 + 0.98·exp(-1) ≈ 0.38`, and ε at the midpoint to `0.62` — still explorative
+early, but actually exploits late. Expected: richer end-of-run trajectories.
+
