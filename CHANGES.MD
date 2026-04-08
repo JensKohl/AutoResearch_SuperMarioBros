@@ -946,6 +946,23 @@ when the agent is confident about its position). The value stream can learn
 a clean state-dependent signal ("how far right is Mario") without conflating
 it with action selection.
 
+**Result:** total_reward = 998 (max_x=898, score=100). Reaches x=898
+(just shy of the wall) with score=100, so it's learning. But below 1734
+and VRAM jumped to 147MB due to doubled FC head parameters. Reverted.
+
+## Exp44 — Zero base reward, use only shaped reward
+
+**What changed:** `DistanceReward.step()` now ignores the base game reward
+(`obs, _, terminated, truncated, info = self.env.step(action)`).
+
+**Why:** gym_super_mario_bros v0 returns a reward that includes
+`x_diff * 0.25` plus time-remaining bonuses and death penalties. Our
+`DistanceReward` wrapper ADDS its own `x_diff * 2.0` on top. This
+double-counts the distance signal and adds time/death noise we didn't
+intend. Using only our clean shaped reward removes the noise: every step
+gives exactly `(x_diff * 2.0) - 0.1`, with +1000 for flag_get. Cleaner
+signal → potentially more stable Q-learning.
+
 ## Exp42 — AMSGrad Adam variant
 
 **What changed:** `optim.Adam(params, lr=LR)` → `optim.Adam(params, lr=LR, amsgrad=True)`.

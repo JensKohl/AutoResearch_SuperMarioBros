@@ -116,9 +116,11 @@ class DistanceReward(gym.Wrapper):
         return self.env.reset(**kwargs)
 
     def step(self, action):
-        obs, reward, terminated, truncated, info = self.env.step(action)
+        obs, _, terminated, truncated, info = self.env.step(action)
         x_pos = info.get('x_pos', 0)
-        reward += (x_pos - self.curr_x) * 2.0
+        # Use purely our shaped reward (ignore base game reward to remove
+        # double-counting of distance signal from gym_super_mario_bros v0).
+        reward = (x_pos - self.curr_x) * 2.0
         self.curr_x = x_pos
         reward -= 0.1
         if info.get('flag_get', False):
@@ -143,7 +145,7 @@ class FrameSkip(gym.Wrapper):
         return obs, total_reward, terminated, truncated, info
 
 
-# --- Dueling DQN Model ---
+# --- DQN Model ---
 class DQN(nn.Module):
     def __init__(self, n_actions):
         super(DQN, self).__init__()
@@ -156,10 +158,12 @@ class DQN(nn.Module):
             nn.Conv2d(64, 64, kernel_size=3, stride=1),
             nn.ReLU()
         )
-        # Dueling streams: value (V) and advantage (A), Q = V + A - mean(A)
-        self.value = nn.Sequential(nn.Linear(3136, 512), nn.ReLU(), nn.Linear(512, 1))
-        self.advantage = nn.Sequential(nn.Linear(3136, 512), nn.ReLU(), nn.Linear(512, n_actions))
-        # Kaiming init for ReLU layers
+        self.fc = nn.Sequential(
+            nn.Linear(3136, 512),
+            nn.ReLU(),
+            nn.Linear(512, n_actions)
+        )
+        # Kaiming init for ReLU conv/fc layers
         for m in self.modules():
             if isinstance(m, (nn.Conv2d, nn.Linear)):
                 nn.init.kaiming_normal_(m.weight, nonlinearity='relu')
@@ -169,9 +173,7 @@ class DQN(nn.Module):
     def forward(self, x):
         features = self.conv(x)
         features = features.view(features.size(0), -1)
-        v = self.value(features)
-        a = self.advantage(features)
-        return v + (a - a.mean(dim=1, keepdim=True))
+        return self.fc(features)
 
 
 # --- Replay Buffer ---
