@@ -500,5 +500,12 @@ the n-step returns. Worth a try given Exp19 already shows training reaches the
 flag occasionally — the question is whether the *value function* learns to
 expect it.
 
+**Result:** `total_reward=40`, `max_x_dist=40`, `score=0`, `flag_get=False`.
+**-1694 vs Exp19 — discarded.** Catastrophic. The bumped γ amplified Q-target
+magnitudes (n-step bootstraps now multiply by `γ²=0.990` instead of `0.980`,
+and propagation is much further), and despite gradient clipping it diverged
+into an "agent stands still" basin. The Exp19 sweet spot is genuinely
+narrow — even modest discount changes break it. Reverted.
+
 
 
