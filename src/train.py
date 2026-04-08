@@ -19,7 +19,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from src.constants import TIME_BUDGET, MAX_EPISODE_STEPS, PRO_MOVEMENT
 
 # Hyperparameters
-BATCH_SIZE = 128
+BATCH_SIZE = 256
 GAMMA = 0.99
 EPS_START = 1.0
 EPS_END = 0.02

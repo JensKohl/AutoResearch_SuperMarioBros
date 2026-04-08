@@ -193,3 +193,14 @@ time interacting (stomping enemies, collecting coins) rather than just running
 right. Consistent with the intuition that a warmer initial replay avoids an early
 "just-go-right" basin and lets the network develop richer behaviour.
 
+## Exp10 — Larger batch size (128 → 256)
+
+**What changed:** `BATCH_SIZE = 128 → 256`. One number.
+
+**Why:** Larger mini-batches reduce gradient noise per update, which usually
+translates into more stable Q-learning. Modern DQN implementations routinely use
+batches of 256–512 on Atari. The forward pass is already tiny (4×84×84, 115 MB
+VRAM total) so doubling the batch is essentially free. This also pairs well with
+our n-step targets: each update now aggregates more independent n-step returns,
+further damping any single bad target. Expected VRAM rise is minor.
+
