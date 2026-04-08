@@ -1200,3 +1200,22 @@ lr=1e-4 accidentally provided a useful averaging effect. Reverting extras.
 Extending to 1500 (full episode budget) lets the greedy policy run to
 natural termination. This is the minimal safe change from the working config.
 
+**Result:** total_reward = 994 (max_x=594, score=400). New best with PPO!
+Greedy probes: 40→315→418→594. The 1500-step probe helps reach further.
+But probe takes ~100s rendered → only 4 probes in 600s training. Main
+bottleneck: rendering slows down the greedy probe. Fixing with fast probe env.
+
+## Exp55 — PPO: fast probe env (render=False) + probe every 3 rollouts
+
+**What changed:**
+- Added `probe_env = make_env(render=False)` — separate non-rendering env for greedy probes
+- Probe frequency: every 5 rollouts → every 3 rollouts
+- Probe uses probe_env instead of training env (training env unchanged, stays rendered)
+
+**Why:** In Exp54, each 1500-step greedy probe took ~100s because
+RENDER=True renders all 1500 × 3 frames. Without rendering, probes run
+~10× faster (~10s). This allows ~15-20 probe cycles per training run
+(vs 4 in Exp54). More probes = better chance of capturing the Q-head at
+peak greedy performance. Using a SEPARATE probe_env means the training env
+state is never disrupted (no more state, info = env.reset() after probe).
+
