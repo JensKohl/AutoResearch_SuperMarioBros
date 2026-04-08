@@ -204,3 +204,9 @@ VRAM total) so doubling the batch is essentially free. This also pairs well with
 our n-step targets: each update now aggregates more independent n-step returns,
 further damping any single bad target. Expected VRAM rise is minor.
 
+**Result:** `total_reward=304`, `max_x_dist=304`, `score=0`, `flag_get=False`.
+**-1195 vs Exp9 — discarded.** `peak_vram_mb=180` (up from 116) which is fine,
+but the bigger batch roughly halved the number of gradient updates per wall
+second. In a 5-minute budget, wall-clock gradient steps are the binding
+constraint — not gradient variance. Smaller and faster wins here. Reverted.
+
