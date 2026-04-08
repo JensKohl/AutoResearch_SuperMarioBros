@@ -326,3 +326,10 @@ learned Q-function and can improve generalization to states the agent hasn't
 seen much of (like everything past x=899). 1e-5 is gentle — it should barely
 touch trained weights but pull unused weights toward zero. Cheap, orthogonal.
 
+**Result:** `total_reward=509`, `max_x_dist=309`, `score=200`, `flag_get=False`.
+**-1090 vs Exp15 — discarded.** Surprising. Hypothesis: Q-learning targets are
+themselves produced by the network, so shrinking weights also shrinks the
+bootstrap target — effectively a drag on the value estimates we're trying to
+grow. Weight decay plays less well with TD learning than with supervised
+learning; this is a known issue in the literature. Reverted.
+
