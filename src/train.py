@@ -110,16 +110,22 @@ class DistanceReward(gym.Wrapper):
     def __init__(self, env):
         super().__init__(env)
         self.curr_x = 0
+        self.prev_score = 0
 
     def reset(self, **kwargs):
         self.curr_x = 0
+        self.prev_score = 0
         return self.env.reset(**kwargs)
 
     def step(self, action):
         obs, reward, terminated, truncated, info = self.env.step(action)
         x_pos = info.get('x_pos', 0)
-        reward += (x_pos - self.curr_x) * 2.0
+        score = info.get('score', 0)
+        # Amplify in-game score (mushroom=1000, enemies=100-200, coins=100)
+        score_diff = max(0, score - self.prev_score)
+        reward += (x_pos - self.curr_x) * 1.5 + score_diff * 0.5
         self.curr_x = x_pos
+        self.prev_score = score
         reward -= 0.1
         if info.get('flag_get', False):
             reward += 1000.0
@@ -381,9 +387,9 @@ def train():
                     torch.nn.utils.clip_grad_norm_(net.parameters(), MAX_GRAD_NORM)
                     optimizer.step()
 
-            # ---- Greedy probe every 3 rollouts ----
+            # ---- Greedy probe every 5 rollouts ----
             n_rollouts += 1
-            if n_rollouts % 3 == 0:
+            if n_rollouts % 5 == 0:
                 net.eval()
                 g_state, _ = env.reset()
                 g_max_x = 0

@@ -1365,3 +1365,25 @@ More probe opportunities means better chance of capturing the optimal Q-head
 snapshot (when it best navigates AND scores well). The 1500-step probe is still
 rendered so it's still ~100s, giving ~5 probes total instead of 4.
 
+**Result:** total_reward = 315 (max_x=315, score=0). With probe every 3
+rollouts, there are FEWER total training rollouts (14 vs 20 in Exp57) because
+the probe overhead is high (~100s). Less training data → worse Q-head → only
+x=315 greedy. Probe frequency hurts when probe is expensive. Reverted to every 5.
+
+## Exp64 — Score amplification in reward: score_diff * 0.5 + distance * 1.5
+
+**What changed:** DistanceReward now amplifies in-game score:
+- Tracks `prev_score` across steps
+- `reward += (x_diff * 1.5) + (score_diff * 0.5)`
+- x_diff multiplier reduced from 2.0 → 1.5 (less pure-distance focus)
+- score_diff * 0.5 amplifies kills/coins (mushroom 1000pts → +500 extra reward)
+
+**Why:** Exp57's score=1000 (mushroom collection) gave total_reward=1435.
+Other PPO runs got score=200-400. To RELIABLY get score=1000+, we need
+the policy and Q-head to STRONGLY prefer score-maximizing actions (mushroom,
+enemy kills). By adding score_diff*0.5 to the shaped reward, the advantage
+of hitting the mushroom block becomes +500 larger than just running past it.
+The Q-head will consistently learn to hit the mushroom and kill enemies, not
+just navigate rightward. Combined with x=434 baseline: if score reaches 1300,
+total=1734 matching DQN's best.
+
