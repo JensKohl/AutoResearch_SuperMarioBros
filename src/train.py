@@ -1,6 +1,5 @@
 import time
 import subprocess
-import copy
 import gym_super_mario_bros
 from nes_py.wrappers import JoypadSpace
 import shimmy
@@ -248,10 +247,6 @@ def train():
     n_actions = env.action_space.n
     net = ActorCritic(n_actions).to(device)
     optimizer = optim.Adam(net.parameters(), lr=LR, eps=1e-5)
-    # Target Q-head for DQN-style bootstrapping
-    target_q_head = copy.deepcopy(net.q_head)
-    target_q_head.requires_grad_(False)
-    target_q_update_counter = 0
 
     start_time = time.time()
     total_rewards = []
@@ -270,6 +265,11 @@ def train():
     best_greedy_snapshot = None # separate from stochastic snapshot
     n_rollouts = 0              # count rollouts for probe scheduling
 
+    # Q-head replay buffer: keeps last 20 rollouts (2560 transitions) for diverse Q-training
+    q_replay_states = deque(maxlen=20 * N_STEPS)
+    q_replay_actions = deque(maxlen=20 * N_STEPS)
+    q_replay_advantages = deque(maxlen=20 * N_STEPS)
+
     state, info = env.reset()
     steps_done = 0
 
@@ -277,7 +277,6 @@ def train():
         while time.time() - start_time < TIME_BUDGET:
             # ---- Collect N_STEPS rollout ----
             rollout_states = []
-            rollout_next_states = []
             rollout_actions = []
             rollout_log_probs = []
             rollout_values = []
@@ -293,7 +292,6 @@ def train():
                 done = terminated or truncated
 
                 rollout_states.append(state)
-                rollout_next_states.append(next_state)
                 rollout_actions.append(action)
                 rollout_log_probs.append(log_prob.item())
                 rollout_values.append(value.item())
@@ -349,6 +347,11 @@ def train():
             returns = advantages + values_t
             advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
 
+            # ---- Populate Q-head replay buffer ----
+            q_replay_states.extend(rollout_states)
+            q_replay_actions.extend(rollout_actions)
+            q_replay_advantages.extend(advantages.cpu().tolist())
+
             # ---- PPO Update ----
             states_arr = np.array(rollout_states, dtype=np.float32) / 255.0
             states_t = torch.FloatTensor(states_arr).to(device)
@@ -379,32 +382,26 @@ def train():
                     torch.nn.utils.clip_grad_norm_(net.parameters(), MAX_GRAD_NORM)
                     optimizer.step()
 
-            # ---- DQN Q-head update with TD bootstrapping ----
-            next_states_arr = np.array(rollout_next_states, dtype=np.float32) / 255.0
-            next_states_t = torch.FloatTensor(next_states_arr).to(device)
-            with torch.no_grad():
-                next_feats = net.fc(net.conv(next_states_t).view(len(next_states_t), -1))
-                next_q = target_q_head(next_feats)
-                td_raw = rewards_t + GAMMA * (1 - dones_t) * next_q.max(dim=1)[0]
-                # Normalize to O(1) for stable MSE training
-                td_targets = td_raw / (td_raw.abs().mean() + 1e-8)
-
-            dqn_idx = np.arange(N_STEPS)
-            np.random.shuffle(dqn_idx)
-            for start in range(0, N_STEPS, MINI_BATCH):
-                mb = dqn_idx[start:start + MINI_BATCH]
-                with torch.no_grad():
-                    q_feats = net.fc(net.conv(states_t[mb]).view(len(mb), -1))
-                q_pred = net.q_head(q_feats).gather(1, actions_t[mb].unsqueeze(1)).squeeze(1)
-                q_td_loss = F.huber_loss(q_pred, td_targets[mb].detach())
-                optimizer.zero_grad()
-                q_td_loss.backward()
-                optimizer.step()
-            # Soft-update target Q-head every 5 rollouts
-            target_q_update_counter += 1
-            if target_q_update_counter % 5 == 0:
-                for p, tp in zip(net.q_head.parameters(), target_q_head.parameters()):
-                    tp.data.copy_(0.99 * tp.data + 0.01 * p.data)
+            # ---- Q-head replay update (2 passes over random sample from buffer) ----
+            if len(q_replay_states) >= MINI_BATCH:
+                buf_states = np.array(q_replay_states, dtype=np.float32) / 255.0
+                buf_actions = np.array(q_replay_actions, dtype=np.int64)
+                buf_advs = np.array(q_replay_advantages, dtype=np.float32)
+                buf_len = len(buf_states)
+                for _ in range(2):
+                    sample_idx = np.random.choice(buf_len, size=min(MINI_BATCH * 2, buf_len), replace=False)
+                    for start in range(0, len(sample_idx), MINI_BATCH):
+                        mb_s = sample_idx[start:start + MINI_BATCH]
+                        s_t = torch.FloatTensor(buf_states[mb_s]).to(device)
+                        a_t = torch.LongTensor(buf_actions[mb_s]).to(device)
+                        adv_t = torch.FloatTensor(buf_advs[mb_s]).to(device)
+                        with torch.no_grad():
+                            q_feats = net.fc(net.conv(s_t).view(len(mb_s), -1))
+                        q_pred = net.q_head(q_feats).gather(1, a_t.unsqueeze(1)).squeeze(1)
+                        q_loss = F.mse_loss(q_pred, adv_t)
+                        optimizer.zero_grad()
+                        q_loss.backward()
+                        optimizer.step()
 
             # ---- Greedy probe every 5 rollouts ----
             n_rollouts += 1

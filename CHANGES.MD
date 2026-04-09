@@ -1326,3 +1326,26 @@ OPTIMAL values backward from reward states. argmax(Q_TD) directly gives the
 greedy optimal action — the same property DQN's greedy eval relies on.
 This is the principled fix to the PPO/DQN eval mismatch.
 
+**Result:** total_reward = 794 (max_x=594, score=200). Greedy probe got 594
+(consistent with other approaches) but score only 200. DQN TD bootstrapping
+gives similar distance as other approaches but doesn't capture score-relevant
+actions. The advantage-based Q-head (Exp57, score=1000) is more likely because
+it targets high-immediate-reward actions (like mushroom collection).
+
+## Exp62 — PPO: Q-head replay buffer for diverse advantage training
+
+**What changed:**
+- Removed Q-head loss from PPO minibatch loop
+- Added `q_replay_buffer` (deque, maxlen=20×N_STEPS=2560): stores (state, action, advantage) tuples from last 20 rollouts
+- After PPO update: sample from buffer (2 passes, 2×MINI_BATCH=128 samples) and train Q-head with advantage targets
+- Q-head trains on diverse experience from past 20 rollouts instead of just current rollout
+
+**Why:** Exp57's score=1000 likely came from the Q-head learning to hit the
+mushroom block (1000 pts) — a high-advantage action that only appears in a
+few frames of a specific rollout. With per-rollout Q-head training, this
+advantage is only seen once in each rollout it appears. With a replay buffer
+(20 rollouts), the mushroom-block transitions are seen MANY times (20× the
+training signal), making the Q-head reliably learn this high-value behavior.
+The buffer also provides states from far-reaching episodes (x>1000) for better
+Q-values at those positions.
+
