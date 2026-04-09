@@ -265,11 +265,6 @@ def train():
     best_greedy_snapshot = None # separate from stochastic snapshot
     n_rollouts = 0              # count rollouts for probe scheduling
 
-    # Q-head replay buffer: keeps last 20 rollouts (2560 transitions) for diverse Q-training
-    q_replay_states = deque(maxlen=20 * N_STEPS)
-    q_replay_actions = deque(maxlen=20 * N_STEPS)
-    q_replay_advantages = deque(maxlen=20 * N_STEPS)
-
     state, info = env.reset()
     steps_done = 0
 
@@ -347,11 +342,6 @@ def train():
             returns = advantages + values_t
             advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
 
-            # ---- Populate Q-head replay buffer ----
-            q_replay_states.extend(rollout_states)
-            q_replay_actions.extend(rollout_actions)
-            q_replay_advantages.extend(advantages.cpu().tolist())
-
             # ---- PPO Update ----
             states_arr = np.array(rollout_states, dtype=np.float32) / 255.0
             states_t = torch.FloatTensor(states_arr).to(device)
@@ -376,36 +366,24 @@ def train():
                     policy_loss = -torch.min(surr1, surr2).mean()
                     value_loss = VALUE_COEF * F.mse_loss(values, mb_returns.detach())
                     entropy_loss = -ENTROPY_COEF * entropy.mean()
-                    loss = policy_loss + value_loss + entropy_loss
+                    # Q-head: fit per-action Q-values to normalized PPO returns
+                    # Q-head targets = advantages (normalized at rollout level, O(1) scale)
+                    # argmax(A(s,a)) == argmax(Q(s,a)) so this is equivalent for greedy eval
+                    with torch.no_grad():
+                        q_feats = net.fc(net.conv(mb_states).view(len(mb_states), -1))
+                    q_pred = net.q_head(q_feats)
+                    q_loss = F.mse_loss(q_pred.gather(1, mb_actions.unsqueeze(1)).squeeze(1),
+                                        mb_advantages.detach())
+
+                    loss = policy_loss + value_loss + entropy_loss + q_loss
                     optimizer.zero_grad()
                     loss.backward()
                     torch.nn.utils.clip_grad_norm_(net.parameters(), MAX_GRAD_NORM)
                     optimizer.step()
 
-            # ---- Q-head replay update (2 passes over random sample from buffer) ----
-            if len(q_replay_states) >= MINI_BATCH:
-                buf_states = np.array(q_replay_states, dtype=np.float32) / 255.0
-                buf_actions = np.array(q_replay_actions, dtype=np.int64)
-                buf_advs = np.array(q_replay_advantages, dtype=np.float32)
-                buf_len = len(buf_states)
-                for _ in range(2):
-                    sample_idx = np.random.choice(buf_len, size=min(MINI_BATCH * 2, buf_len), replace=False)
-                    for start in range(0, len(sample_idx), MINI_BATCH):
-                        mb_s = sample_idx[start:start + MINI_BATCH]
-                        s_t = torch.FloatTensor(buf_states[mb_s]).to(device)
-                        a_t = torch.LongTensor(buf_actions[mb_s]).to(device)
-                        adv_t = torch.FloatTensor(buf_advs[mb_s]).to(device)
-                        with torch.no_grad():
-                            q_feats = net.fc(net.conv(s_t).view(len(mb_s), -1))
-                        q_pred = net.q_head(q_feats).gather(1, a_t.unsqueeze(1)).squeeze(1)
-                        q_loss = F.mse_loss(q_pred, adv_t)
-                        optimizer.zero_grad()
-                        q_loss.backward()
-                        optimizer.step()
-
-            # ---- Greedy probe every 5 rollouts ----
+            # ---- Greedy probe every 3 rollouts ----
             n_rollouts += 1
-            if n_rollouts % 5 == 0:
+            if n_rollouts % 3 == 0:
                 net.eval()
                 g_state, _ = env.reset()
                 g_max_x = 0

@@ -1349,3 +1349,19 @@ training signal), making the Q-head reliably learn this high-value behavior.
 The buffer also provides states from far-reaching episodes (x>1000) for better
 Q-values at those positions.
 
+**Result:** total_reward = 595 (max_x=595, score=0). Worse. Replay buffer
+mixes advantages from different value functions (V(s) changes each rollout).
+Old advantages are only valid under the policy that computed them — mixing
+them introduces inconsistency. Q-head gets confused, greedy probe only x=434,
+score=0. The advantages are not stable enough for off-policy replay.
+
+## Exp63 — Exp57 + probe every 3 rollouts (more snapshot opportunities)
+
+**What changed:** Probe frequency: every 5 rollouts → every 3 rollouts.
+
+**Why:** Exp57 got 4 probe cycles in 600s (each cycle ~140s: 5×8s + 100s probe).
+With every 3 rollouts: ~5-6 cycles in 600s (3×8s + 100s ≈ 124s per cycle).
+More probe opportunities means better chance of capturing the optimal Q-head
+snapshot (when it best navigates AND scores well). The 1500-step probe is still
+rendered so it's still ~100s, giving ~5 probes total instead of 4.
+
