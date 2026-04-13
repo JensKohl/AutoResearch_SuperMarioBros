@@ -225,7 +225,9 @@ def train():
 
                     q_values = policy_net(states).gather(1, actions)
                     with torch.no_grad():
-                        next_q_values = target_net(next_states).max(1)[0]
+                        # Double DQN: policy net selects action, target net evaluates it
+                        next_actions = policy_net(next_states).max(1)[1].unsqueeze(1)
+                        next_q_values = target_net(next_states).gather(1, next_actions).squeeze(1)
                         target_q_values = rewards + (GAMMA * next_q_values * (1 - dones))
 
                     loss = nn.MSELoss()(q_values.squeeze(), target_q_values)
