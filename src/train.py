@@ -26,7 +26,7 @@ EPS_START = 1.0
 EPS_END = 0.02
 EPS_DECAY = 10000
 TARGET_UPDATE = 1000
-MEMORY_SIZE = 10000
+MEMORY_SIZE = 50000
 LR = 1e-4
 RENDER = True
 
@@ -109,17 +109,21 @@ class DistanceReward(gym.Wrapper):
     def __init__(self, env):
         super().__init__(env)
         self.curr_x = 0
+        self.curr_score = 0
 
     def reset(self, **kwargs):
         self.curr_x = 0
+        self.curr_score = 0
         return self.env.reset(**kwargs)
 
     def step(self, action):
         obs, reward, terminated, truncated, info = self.env.step(action)
         x_pos = info.get('x_pos', 0)
+        score = info.get('score', 0)
         reward += (x_pos - self.curr_x) * 2.0
+        reward += (score - self.curr_score) * 0.01
         self.curr_x = x_pos
-        reward -= 0.1
+        self.curr_score = score
         if info.get('flag_get', False):
             reward += 1000.0
         return obs, reward, terminated, truncated, info
