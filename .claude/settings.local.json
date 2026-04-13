@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(cp CHANGES.MD /tmp/changes_backup.md)",
+      "Bash(cp /tmp/changes_backup.md CHANGES.MD)"
+    ]
+  }
+}
