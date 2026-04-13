@@ -120,8 +120,8 @@ class DistanceReward(gym.Wrapper):
         obs, reward, terminated, truncated, info = self.env.step(action)
         x_pos = info.get('x_pos', 0)
         score = info.get('score', 0)
-        reward += (x_pos - self.curr_x) * 4.0
-        reward += (score - self.curr_score) * 0.005
+        reward += (x_pos - self.curr_x) * 2.0
+        reward += (score - self.curr_score) * 0.01
         self.curr_x = x_pos
         self.curr_score = score
         reward -= 0.1
@@ -230,12 +230,10 @@ def train():
 
                     q_values = policy_net(states).gather(1, actions)
                     with torch.no_grad():
-                        # Double DQN: policy net selects action, target net evaluates it
-                        next_actions = policy_net(next_states).max(1)[1].unsqueeze(1)
-                        next_q_values = target_net(next_states).gather(1, next_actions).squeeze(1)
+                        next_q_values = target_net(next_states).max(1)[0]
                         target_q_values = rewards + (GAMMA * next_q_values * (1 - dones))
 
-                    loss = nn.MSELoss()(q_values.squeeze(), target_q_values)
+                    loss = nn.SmoothL1Loss()(q_values.squeeze(), target_q_values)
                     optimizer.zero_grad()
                     loss.backward()
                     optimizer.step()
