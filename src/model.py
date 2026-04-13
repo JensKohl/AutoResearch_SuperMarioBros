@@ -11,7 +11,11 @@ class PolicyModel(nn.Module):
             nn.Conv2d(16, 32, kernel_size=4, stride=2),
             nn.ReLU(),
         )
-        self.fc = nn.Linear(2592, n_actions)
+        self.fc = nn.Sequential(
+            nn.Linear(2592, 512),
+            nn.ReLU(),
+            nn.Linear(512, n_actions)
+        )
 
     def forward(self, x):
         features = self.conv(x)
