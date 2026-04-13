@@ -1,0 +1,65 @@
+commit	seconds_to_finish	total_reward	flag_get	max_x_dist	score	status	description
+aea4101	0.0	435.0	False	435	0	keep	Exp1 baseline (vanilla DQN, fresh branch, 10min budget)
+04b1e14	0.0	596.0	False	596	0	keep	Exp2 Double DQN + 50k buffer + 50k eps decay + Huber (past x=434 wall)
+1f87218	0.0	315.0	False	315	0	discard	Exp3 3-step returns — destabilised, -281 vs Exp2
+15e4cb5	0.0	635.0	False	435	200	keep	Exp4 gradient clipping (norm 10) — first run with nonzero score
+db26b13	0.0	315.0	False	315	0	discard	Exp5 Dueling DQN — head param doubling hurts small-budget training
+ce8606c	0.0	1199.0	False	899	300	keep	Exp6 2-step returns + grad-clip — big jump (+564), max_x nearly doubled
+201dbc1	0.0	314.0	False	314	0	discard	Exp7 N_STEP=3 — tipping point past 2, even with clipping; same as Exp3
+17bef4d	0.0	304.0	False	304	0	discard	Exp8 frame skip 3->4 — fewer updates per sec, hurts in short budget
+2c15bb8	0.0	1499.0	False	899	600	keep	Exp9 LEARN_START=1000 warmup — +300, score doubled to 600
+c799547	0.0	304.0	False	304	0	discard	Exp10 batch 128->256 — halves updates/sec, wall-clock bound
+f08201f	0.0	315.0	False	315	0	discard	Exp11 EPS_DECAY 50k->20k — premature exploitation
+bcb4d13	0.0	1284.0	False	684	600	discard	Exp12 death penalty -25 — punishes exploration that we still need
+4122111	0.0	906.0	False	706	200	discard	Exp13 EPS_END 0.02->0.1 — noisy tail hurts greedy eval
+1a88aa5	0.0	635.0	False	435	200	discard	Exp14 batch 128->64 — too noisy, 128 is the sweet spot
+beb23f5	0.0	1599.0	False	899	700	keep	Exp15 Kaiming init — score 600->700, same wall at x=899
+291a9ce	0.0	509.0	False	309	200	discard	Exp16 weight_decay 1e-5 — shrinks Q bootstraps, hurts TD learning
+210ec73	0.0	535.0	False	435	100	discard	Exp17 frontier-only distance — lost backward penalty, agent meanders
+0acc626	0.0	595.0	False	595	0	discard	Exp18 2 updates per env step — halves env steps, data starves
+99c4dd7	0.0	1734.0	False	1434	300	keep	Exp19 best-snapshot save — broke x=899 wall, training reached flag once
+9676f22	0.0	1509.0	False	1509	0	discard	Exp20 snapshot eps<0.75 filter — strictly greedy snapshot loses score interactions
+f3a298c	0.0	594.0	False	594	0	discard	Exp21 soft target tau=0.005 — too aggressive, target net not stale enough
+6d677c7	0.0	800.0	False	700	100	discard	Exp22 greedy validation episodes — train env != eval env (fixed seeds)
+d5e70ef	0.0	40.0	False	40	0	discard	Exp23 gamma 0.99->0.995 — catastrophic Q-divergence into stand-still
+3b41145	0.0	301.0	False	301	0	discard	Exp24 LR 1e-4->5e-5 — undertrained, lucky early snapshot
+3b8aee4	0.0	307.0	False	307	0	discard	Exp25 PER (no sum-tree) — sampling overhead beats the win
+d0ced07	0.0	535.0	False	435	100	discard	Exp26 RENDER=False — more steps but snapshot scheme amplifies luck
+bce1c9e	0.0	998.0	False	898	100	discard	Exp27 RENDER=False + skip-10 — snapshot still picks lucky outliers
+40c37a2	0.0	314.0	False	314	0	discard	Exp28 RENDER=False + drop snapshot — final weights mid-training are weak
+89c32d9	0.0	304.0	False	304	0	discard	Exp29 RENDER=False + EMA weights — GPU thermal cutoff + EMA smears policy
+f33bd06	0.0	635.0	False	435	200	discard	Exp30 FC 512->1024 — score-farming episodes pollute snapshot, hurts eval
+5506f34	0.0	310.0	False	310	0	discard	Exp31 snapshot=max_x only — lucky ε-greedy episodes still dominate
+7aabe33	0.0	1095.0	False	595	500	discard	Exp32 greedy probe every 5 eps — 150 steps too short for full episode proxy
+e908b50	0.0	534.0	False	434	100	discard	Exp33 flag bonus 5000 — Q-scale destabilizes; saved_metric lower than Exp19
+bb6c791	0.0	40.0	False	40	0	discard	Exp35 frontier bonus — non-stationary replay confuses Q-learning
+1dc29fc	0.0	595.0	False	595	0	discard	Exp36 dual replay frontier buffer — score=0 rush behavior, biased gradients
+c07cb5d	0.0	426.0	False	426	0	discard	Exp37 FrameSkip 3->2 — GPU thermal cutoff + finer steps hurt convergence
+c4bcb84	0.0	76.0	False	76	0	discard	Exp38 LR 2.5e-4 — Q-value divergence, agent barely moves
+1bb0056	0.0	435.0	False	435	0	discard	Exp39 EPS_DECAY=80k — too much randomness; 50k confirmed as sweet spot
+fc4156f	0.0	676.0	False	676	0	discard	Exp40 NoisyNet — weaker than ε-greedy for lucky far-reaching episodes
+fce751c	0.0	595.0	False	595	0	discard	Exp41 TARGET_UPDATE=2000 — longer stable targets don't help in short budget
+f11fbae	0.0	312.0	False	312	0	discard	Exp42 AMSGrad — conservative lr dynamics hurt short-budget policy learning
+e56b731	0.0	998.0	False	898	100	discard	Exp43 Dueling DQN — reaches x=898 but still below Exp19; VRAM 147MB
+75a08e6	0.0	834.0	False	434	400	discard	Exp44 zero base reward — loses time/death signal, lower max_x
+f2a6285	0.0	1499.0	False	899	600	discard	Exp34 greedy probe 500-step — consistent but capped at x=899, under Exp19
+4fc6a01	0.0	40.0	False	40	0	crash	Exp45 PPO — CUDA assert from policy collapse; training reached x=2019 but model invalid
+af98d38	0.0	314.0	False	314	0	discard	Exp46 PPO LR=1e-4 + logit clamp — no crash, but greedy eval stuck at x=314
+9d51bc4	0.0	315.0	False	315	0	discard	Exp47 PPO greedy probe — snapshot tracking bug (greedy overwritten by stochastic x=1794)
+89de18a	0.0	314.0	False	314	0	discard	Exp48 PPO separate greedy snapshot — confirmed greedy policy stuck at x=314 (pit wall)
+2d30c93	0.0	314.0	False	314	0	discard	Exp49 PPO N_STEPS=128 + entropy=0.005 — still x=314, policy logits not Q-values
+3b38ba1	0.0	315.0	False	315	0	discard	Exp50 PPO Q-head — Q-head loss scale overwhelmed PPO gradient, still x=315
+cba4540	0.0	723.0	False	723	0	keep	Exp51 PPO Q-head (detached+normalized) — cleared x=314 pit, new best with PPO
+2cab7ab	0.0	535.0	False	435	100	discard	Exp52 entropy=0.01 + probe 1500 — noisier Q-targets hurt, regression
+b7ef2cc	0.0	435.0	False	435	0	discard	Exp53 dedicated Q-head optimizer — per-rollout overfitting, regression from Exp51
+42825ef	0.0	994.0	False	594	400	keep	Exp54 probe 1500 steps — new PPO best, greedy 40→315→418→594
+a94ba4a	0.0	536.0	False	436	100	discard	Exp55 fast probe env — too many rollouts with low entropy hurt Q-head
+170ccdb	0.0	296.0	False	296	0	discard	Exp56 N_EPOCHS=6 — PPO instability, over-updating, x=296
+b9c7880	0.0	1435.0	False	435	1000	keep	Exp57 Q-head advantages targets — 1000 score, new best total_reward=1435
+55e32a7	0.0	316.0	False	316	0	discard	Exp58 entropy=0.008 — stochastic max only x=1226, regression
+6bc2358	0.0	314.0	False	314	0	discard	Exp59 running-stats normalization — bad initial stats, regression
+94ac22c	0.0	795.0	False	595	200	discard	Exp60 Q-head non-detached — better distance (595) but lower score (200)
+074f612	0.0	794.0	False	594	200	discard	Exp61 DQN TD bootstrapping — same distance as Exp60 but still low score
+8e225b0	0.0	595.0	False	595	0	discard	Exp62 Q-head replay buffer — stale advantages from old value fns, regression
+3b2cb50	0.0	315.0	False	315	0	discard	Exp63 probe every 3 rollouts — too few training rollouts, regression
+
