@@ -7,7 +7,8 @@ To set up a new experiment, work with the user to:
 2. Create the branch: git checkout -b autoresearch/<tag> from current master.
 3. Read the in-scope files: The repo is small. Read these files for full context:
     - README.md — repository context.
-    - train.py — the file you modify. Model architecture, optimizer, training loop.
+    - train.py — the file you modify. Optimizer, reward wrappers, hyperparameters, training loop.
+    - model.py — define your PolicyModel class here. Replace it when experimenting with new architectures or RL algorithms.
     - evaluate.py - file to evaluate the training. Do not modify.
 4. Verify data exists: Check that ROMS contains game files (*.nes, *.smc). If not, tell the human to put game files into the folder.
 5. Initialize results.tsv: Create results.tsv with just the header row. The baseline will be recorded after the first run.
@@ -22,7 +23,7 @@ Each experiment runs on a single GPU. The training script runs for a fixed time 
 
 **What you CAN do:**
 
-- Modify train.py — this is the only file you edit. Everything is fair game: model architecture, optimizer, reward functions, hyperparameters, training loop, batch size, model size, etc.
+- Modify train.py and model.py — these are the only files you edit. Everything is fair game: model architecture, optimizer, reward functions, hyperparameters, training loop, batch size, model size, etc. The model class in model.py must always be named `PolicyModel` — evaluate.py imports it by that exact name.
 
 **What you CANNOT do:**
 

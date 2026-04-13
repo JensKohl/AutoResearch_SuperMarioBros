@@ -17,6 +17,7 @@ import warnings
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from src.constants import TIME_BUDGET, MAX_EPISODE_STEPS, PRO_MOVEMENT
+from src.model import PolicyModel
 
 # Hyperparameters
 BATCH_SIZE = 128
@@ -141,31 +142,6 @@ class FrameSkip(gym.Wrapper):
         return obs, total_reward, terminated, truncated, info
 
 
-# --- DQN Model ---
-class DQN(nn.Module):
-    def __init__(self, n_actions):
-        super(DQN, self).__init__()
-        # Input: 4 stacked grayscale frames (4x84x84)
-        self.conv = nn.Sequential(
-            nn.Conv2d(4, 32, kernel_size=8, stride=4),
-            nn.ReLU(),
-            nn.Conv2d(32, 64, kernel_size=4, stride=2),
-            nn.ReLU(),
-            nn.Conv2d(64, 64, kernel_size=3, stride=1),
-            nn.ReLU()
-        )
-        self.fc = nn.Sequential(
-            nn.Linear(3136, 512),
-            nn.ReLU(),
-            nn.Linear(512, n_actions)
-        )
-
-    def forward(self, x):
-        features = self.conv(x)
-        features = features.view(features.size(0), -1)
-        return self.fc(features)
-
-
 # --- Replay Buffer ---
 class ReplayBuffer:
     def __init__(self, capacity):
@@ -193,8 +169,8 @@ def train():
     env = FrameStack(env, k=4)
 
     n_actions = env.action_space.n
-    policy_net = DQN(n_actions).to(device)
-    target_net = DQN(n_actions).to(device)
+    policy_net = PolicyModel(n_actions).to(device)
+    target_net = PolicyModel(n_actions).to(device)
     target_net.load_state_dict(policy_net.state_dict())
     target_net.eval()
 
