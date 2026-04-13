@@ -2,14 +2,13 @@ import time
 import argparse
 import os
 import sys
-
 import torch
 import numpy as np
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from src.constants import MAX_EPISODE_STEPS
-from src.train import PreprocessFrame, EnsureChannelFirst, FrameStack, FrameSkip, DQN, device, make_env
-
+from src.train import PreprocessFrame, EnsureChannelFirst, FrameStack, FrameSkip, device, make_env
+from src.model import PolicyModel
 
 def evaluate(render=False):
     env = make_env(render=render)
@@ -19,14 +18,14 @@ def evaluate(render=False):
     env = FrameStack(env, k=4)
 
     n_actions = env.action_space.n
-    model = DQN(n_actions).to(device)
 
+    net = PolicyModel(n_actions).to(device)
     model_path = os.path.join("MODELS", "model.pt")
     if os.path.exists(model_path):
-        model.load_state_dict(torch.load(model_path, map_location=device))
+        net.load_state_dict(torch.load(model_path, map_location=device))
         print(f"Loaded model from {model_path}")
 
-    model.eval()
+    net.eval()
     state, info = env.reset()
 
     frames_survived = 0
@@ -37,7 +36,7 @@ def evaluate(render=False):
     with torch.no_grad():
         for _ in range(MAX_EPISODE_STEPS):
             state_tensor = torch.FloatTensor(state).unsqueeze(0).to(device) / 255.0
-            action = model(state_tensor).max(1)[1].view(1, 1).item()
+            action = net(state_tensor).max(1)[1].view(1, 1).item()
 
             state, reward, terminated, truncated, info = env.step(action)
             frames_survived += 1
@@ -55,7 +54,6 @@ def evaluate(render=False):
     seconds_to_finish = seconds_survived if flag_get else 0.0
     env.close()
 
-    # total_reward is the key metric: combines flag completion, speed, score, and distance
     if flag_get:
         total_reward = 10000 + (400 - seconds_to_finish) + score + max_x_dist
     else:

@@ -17,7 +17,7 @@ Once you get confirmation, kick off the experimentation.
 
 ## Experimentation
 
-Each experiment runs on a single GPU. The training script runs for a fixed time budget of 5 minutes (wall clock training time, excluding startup/compilation). You launch it simply as: 
+Each experiment runs on a single GPU. The training script runs for a fixed time budget of 10 minutes (wall clock training time, excluding startup/compilation). You launch it simply as: 
 ```uv run --no-sync src/train.py```.
 
 **What you CAN do:**
@@ -38,9 +38,9 @@ Each experiment runs on a single GPU. The training script runs for a fixed time 
 - If the agent finishes the level (`flag_get=True`): `10000 + (400 - seconds_to_finish) + score + max_x_dist`
 - Otherwise: `score + max_x_dist`
 
-Finishing the level is the dominant objective (10000 bonus). Among runs that finish, faster + higher score + further right is better. Among runs that don't finish, score and distance count equally. Everything is fair game: change the architecture, use other Reinforcement learning algorithms you can find in the Internet, use frame stacking for images, the optimizer, the hyperparameters, the batch size, the model size, the reward functions, the rewards. The only constraint is that the code runs without crashing and finishes within the time budget.
+Finishing the level is the dominant objective (10000 bonus). Among runs that finish, faster + higher score + further right is better. Among runs that don't finish, score and distance count equally. Everything is fair game: change the architecture, use other Reinforcement learning algorithms you can find in the Internet, use frame stacking for images, the optimizer, the hyperparameters, the batch size, the model size, the reward functions, the rewards. Don't discard reinforcement learning algorithms too fast: just because one experiment does not have good results does not mean that the algorithm is bad. Try then different experiments with changed hyperparameters. The only constraint is that the code runs without crashing and finishes within the time budget.
 
-Document your changes in a file called CHANGES.MD, so people can later read and understand what you did. Be sure to explain your changes in that file so readers understand why you did the changes. Be aware that the reader might not have a lot of knowledge, so explain things clearly. But be concise: add references or links instead of very long explanations.
+Document your changes in a file called CHANGES.MD, so people can later read and understand what you did. Be sure to explain your changes in that file so readers understand **what you changed**, **why** you did the changes and what the **results** were. Be aware that the reader might not have a lot of knowledge, so explain things clearly. But be concise: add references or links instead of very long explanations. Also explain your code so people can understand what you implemented.
 
 **VRAM** is a soft constraint. Some increase is acceptable for meaningful reward gains, but it should not blow up dramatically.
 
@@ -65,7 +65,7 @@ seconds_to_finish: 0.0
 total_reward: 514.0
 ```
 
-The key decision metric is `total_reward` (from evaluate.py). Note that the script is configured to always stop after 5 minutes, so numbers will vary by machine.
+The key decision metric is `total_reward` (from evaluate.py). Note that the script is configured to always stop after 10 minutes, so numbers will vary by machine.
 
 ## Logging results
 
@@ -98,7 +98,7 @@ LOOP FOREVER:
 
 1. Look at the git state: the current branch/commit we're on
 2. Tune train.py with an experimental idea by directly hacking the code.
-3. Update CHANGES.MD: append a section describing what you changed and why.
+3. Update CHANGES.MD: append a section describing what you changed and why. (NOTE: do not commit CHANGES.MD — leave it untracked by git)
 4. git commit (include both train.py and CHANGES.MD)
 5. Run training: ```uv run --no-sync src/train.py > run.log 2>&1``` (redirect everything — do NOT use tee or let output flood your context)
 6. Run evaluation: ```uv run --no-sync src/evaluate.py >> run.log 2>&1``` (appends to same log)
@@ -111,10 +111,70 @@ LOOP FOREVER:
 
 The idea is that you are a completely autonomous researcher trying things out. If they work, keep. If they don't, discard. And you're advancing the branch so that you can iterate. If you feel like you're getting stuck in some way, you can rewind but you should probably do this very very sparingly (if ever).
 
-**Timeout**: Each experiment should take ~5 minutes total (+ a few seconds for startup and eval overhead). If a run exceeds 10 minutes, kill it and treat it as a failure (discard and revert).
+**Timeout**: Each experiment should take ~10 minutes total (+ a few seconds for startup and eval overhead). If a run exceeds 20 minutes, kill it and treat it as a failure (discard and revert).
 
 **Crashes**: If a run crashes (OOM, or a bug, or etc.), use your judgment: If it's something dumb and easy to fix (e.g. a typo, a missing import), fix it and re-run. If the idea itself is fundamentally broken, just skip it, log "crash" as the status in the tsv, and move on.
 
 **NEVER STOP**: Once the experiment loop has begun (after the initial setup), do NOT pause to ask the human if you should continue. Do NOT ask "should I keep going?" or "is this a good stopping point?". The human might be asleep, or gone from a computer and expects you to continue working indefinitely until you are manually stopped. You are autonomous. If you run out of ideas, think harder — read papers referenced in the code, re-read the in-scope files for new angles, search the web for new ideas, try combining previous near-misses, try more radical architectural changes. The loop runs until the human interrupts you, period.
 
-As an example use case, a user might leave you running while they sleep. If each experiment takes you ~5 minutes then you can run approx 12/hour, for a total of about 100 over the duration of the average human sleep. The user then wakes up to experimental results, all completed by you while they slept!
+As an example use case, a user might leave you running while they sleep. If each experiment takes you ~10 minutes then you can run approx 5/hour, for a total of about 40 over the duration of the average human sleep. The user then wakes up to experimental results, all completed by you while they slept!
+
+
+## Agent Coding guidelines
+**Tradeoff:** These guidelines bias toward caution over speed. For trivial tasks, use judgment.
+
+### 1. Think Before Coding
+
+**Don't assume. Don't hide confusion. Surface tradeoffs.**
+
+Before implementing:
+- State your assumptions explicitly. If uncertain, ask.
+- If multiple interpretations exist, present them - don't pick silently.
+- If a simpler approach exists, say so. Push back when warranted.
+- If something is unclear, stop. Name what's confusing. Ask.
+
+### 2. Simplicity First
+
+**Minimum code that solves the problem. Nothing speculative.**
+
+- No features beyond what was asked.
+- No abstractions for single-use code.
+- No "flexibility" or "configurability" that wasn't requested.
+- No error handling for impossible scenarios.
+- If you write 200 lines and it could be 50, rewrite it.
+
+Ask yourself: "Would a senior engineer say this is overcomplicated?" If yes, simplify.
+
+### 3. Surgical Changes
+
+**Touch only what you must. Clean up only your own mess.**
+
+When editing existing code:
+- Don't "improve" adjacent code, comments, or formatting.
+- Don't refactor things that aren't broken.
+- Match existing style, even if you'd do it differently.
+- If you notice unrelated dead code, mention it - don't delete it.
+
+When your changes create orphans:
+- Remove imports/variables/functions that YOUR changes made unused.
+- Don't remove pre-existing dead code unless asked.
+
+The test: Every changed line should trace directly to the user's request.
+
+### 4. Goal-Driven Execution
+
+**Define success criteria. Loop until verified.**
+
+Transform tasks into verifiable goals:
+- "Add validation" → "Write tests for invalid inputs, then make them pass"
+- "Fix the bug" → "Write a test that reproduces it, then make it pass"
+- "Refactor X" → "Ensure tests pass before and after"
+
+For multi-step tasks, state a brief plan:
+```
+1. [Step] → verify: [check]
+2. [Step] → verify: [check]
+3. [Step] → verify: [check]
+```
+
+Strong success criteria let you loop independently. Weak criteria ("make it work") require constant clarification.
