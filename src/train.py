@@ -120,8 +120,8 @@ class DistanceReward(gym.Wrapper):
         obs, reward, terminated, truncated, info = self.env.step(action)
         x_pos = info.get('x_pos', 0)
         score = info.get('score', 0)
-        reward += (x_pos - self.curr_x) * 2.0
-        reward += (score - self.curr_score) * 0.01
+        reward += (x_pos - self.curr_x) * 4.0
+        reward += (score - self.curr_score) * 0.005
         self.curr_x = x_pos
         self.curr_score = score
         reward -= 0.1
