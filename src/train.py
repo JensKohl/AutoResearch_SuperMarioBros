@@ -23,7 +23,7 @@ from src.model import PolicyModel
 BATCH_SIZE = 128
 GAMMA = 0.99
 EPS_START = 1.0
-EPS_END = 0.05
+EPS_END = 0.02
 EPS_DECAY = 30000
 TARGET_UPDATE = 1000
 MEMORY_SIZE = 50000
@@ -161,7 +161,7 @@ class ReplayBuffer:
 # --- Training Loop ---
 def train():
     env = make_env(render=RENDER)
-    env = FrameSkip(env, skip=3)
+    env = FrameSkip(env, skip=4)
     env = DistanceReward(env)
     env = PreprocessFrame(env)
     env = EnsureChannelFirst(env)
