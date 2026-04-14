@@ -27,7 +27,7 @@ EPS_END = 0.02
 EPS_DECAY = 30000
 TARGET_UPDATE = 1000
 MEMORY_SIZE = 50000
-LR = 1e-4
+LR = 3e-4
 RENDER = True
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
