@@ -7,10 +7,10 @@ import gymnasium as gym
 import torch
 import torch.nn as nn
 import torch.optim as optim
+from torch.distributions import Categorical
 import numpy as np
 import cv2
 import os
-import random
 from collections import deque
 import sys
 import warnings
@@ -20,13 +20,10 @@ from src.constants import TIME_BUDGET, MAX_EPISODE_STEPS, PRO_MOVEMENT
 from src.model import PolicyModel
 
 # Hyperparameters
-BATCH_SIZE = 128
 GAMMA = 0.99
-EPS_START = 1.0
-EPS_END = 0.02
-EPS_DECAY = 30000
-TARGET_UPDATE = 500
-MEMORY_SIZE = 50000
+N_STEPS = 20        # rollout length before each update
+VALUE_COEF = 0.5    # weight of critic loss
+ENTROPY_COEF = 0.01 # entropy bonus to encourage exploration
 LR = 1e-4
 RENDER = True
 
@@ -141,24 +138,7 @@ class FrameSkip(gym.Wrapper):
         return obs, total_reward, terminated, truncated, info
 
 
-# --- Replay Buffer ---
-class ReplayBuffer:
-    def __init__(self, capacity):
-        self.buffer = deque(maxlen=capacity)
-
-    def push(self, state, action, reward, next_state, done):
-        self.buffer.append((state, action, reward, next_state, done))
-
-    def sample(self, batch_size):
-        batch = random.sample(self.buffer, batch_size)
-        states, actions, rewards, next_states, dones = zip(*batch)
-        return np.array(states), actions, rewards, np.array(next_states), dones
-
-    def __len__(self):
-        return len(self.buffer)
-
-
-# --- Training Loop ---
+# --- A2C Training Loop ---
 def train():
     env = make_env(render=RENDER)
     env = FrameSkip(env, skip=3)
@@ -169,81 +149,89 @@ def train():
 
     n_actions = env.action_space.n
     policy_net = PolicyModel(n_actions).to(device)
-    target_net = PolicyModel(n_actions).to(device)
-    target_net.load_state_dict(policy_net.state_dict())
-    target_net.eval()
+    # A2C uses RMSprop with standard settings (alpha=0.99, eps=1e-5)
+    optimizer = optim.RMSprop(policy_net.parameters(), lr=LR, alpha=0.99, eps=1e-5)
 
-    optimizer = optim.RMSprop(policy_net.parameters(), lr=LR, alpha=0.95, eps=0.01, momentum=0.95)
-    memory = ReplayBuffer(MEMORY_SIZE)
-    steps_done = 0
-
+    state, _ = env.reset()
     start_time = time.time()
-    total_rewards = []
-
+    episode_reward = 0
+    episode_count = 0
+    episode_rewards = []
     best_total_reward = -float('inf')
     best_score = 0
     best_time = 0
 
     try:
         while time.time() - start_time < TIME_BUDGET:
-            state, info = env.reset()
-            episode_reward = 0
+            log_probs_buf, values_buf, rewards_buf, dones_buf, entropies_buf = [], [], [], [], []
 
-            for t in range(MAX_EPISODE_STEPS):
-                eps_threshold = EPS_END + (EPS_START - EPS_END) * np.exp(-1. * steps_done / EPS_DECAY)
-                if random.random() > eps_threshold:
-                    with torch.no_grad():
-                        state_tensor = torch.FloatTensor(state).unsqueeze(0).to(device) / 255.0
-                        action = policy_net(state_tensor).max(1)[1].view(1, 1).item()
-                else:
-                    action = env.action_space.sample()
-                steps_done += 1
+            for _ in range(N_STEPS):
+                if time.time() - start_time >= TIME_BUDGET:
+                    break
+                state_t = torch.FloatTensor(state).unsqueeze(0).to(device) / 255.0
+                probs, value = policy_net.forward_ac(state_t)
+                dist = Categorical(probs)
+                action = dist.sample()
 
-                next_state, reward, terminated, truncated, info = env.step(action)
+                next_state, reward, terminated, truncated, info = env.step(action.item())
                 done = terminated or truncated
                 episode_reward += reward
 
-                memory.push(state, action, reward, next_state, done)
-                state = next_state
-
                 current_time = info.get('time', 0)
                 current_score = info.get('score', 0)
-                current_total = current_time + current_score
-                if current_total > best_total_reward:
-                    best_total_reward = current_total
+                if current_time + current_score > best_total_reward:
+                    best_total_reward = current_time + current_score
                     best_score = current_score
                     best_time = current_time
 
-                if len(memory) > BATCH_SIZE:
-                    states, actions, rewards, next_states, dones = memory.sample(BATCH_SIZE)
-                    states = torch.FloatTensor(states).to(device) / 255.0
-                    actions = torch.LongTensor(actions).unsqueeze(1).to(device)
-                    rewards = torch.FloatTensor(rewards).to(device)
-                    next_states = torch.FloatTensor(next_states).to(device) / 255.0
-                    dones = torch.FloatTensor(dones).to(device)
+                log_probs_buf.append(dist.log_prob(action))
+                values_buf.append(value.squeeze())
+                rewards_buf.append(reward)
+                dones_buf.append(float(done))
+                entropies_buf.append(dist.entropy())
 
-                    q_values = policy_net(states).gather(1, actions)
-                    with torch.no_grad():
-                        next_q_values = target_net(next_states).max(1)[0]
-                        target_q_values = rewards + (GAMMA * next_q_values * (1 - dones))
+                state = next_state
+                if done:
+                    episode_rewards.append(episode_reward)
+                    episode_count += 1
+                    episode_reward = 0
+                    state, _ = env.reset()
+                    gpu_temp = get_gpu_temp()
+                    print(f"Episode {episode_count:>3} | Reward: {episode_rewards[-1]:>6.1f} | GPU: {gpu_temp}°C")
+                    if gpu_temp >= MAX_GPU_TEMP:
+                        print(f"GPU {gpu_temp}°C >= {MAX_GPU_TEMP}°C — stopping.")
+                        raise KeyboardInterrupt
 
-                    loss = nn.SmoothL1Loss()(q_values.squeeze(), target_q_values)
-                    optimizer.zero_grad()
-                    loss.backward()
-                    optimizer.step()
-
-                if steps_done % TARGET_UPDATE == 0:
-                    target_net.load_state_dict(policy_net.state_dict())
-
-                if done or (time.time() - start_time >= TIME_BUDGET):
-                    break
-
-            total_rewards.append(episode_reward)
-            gpu_temp = get_gpu_temp()
-            print(f"Episode {len(total_rewards):>3} | Reward: {episode_reward:>6.1f} | Epsilon: {eps_threshold:>5.3f} | Steps: {steps_done} | GPU: {gpu_temp}°C")
-            if gpu_temp >= MAX_GPU_TEMP:
-                print(f"GPU temperature {gpu_temp}°C >= {MAX_GPU_TEMP}°C limit — stopping training to cool down.")
+            if not log_probs_buf:
                 break
+
+            # Bootstrap value for last state
+            with torch.no_grad():
+                state_t = torch.FloatTensor(state).unsqueeze(0).to(device) / 255.0
+                _, next_value = policy_net.forward_ac(state_t)
+            R = next_value.squeeze().detach()
+
+            # Compute n-step returns
+            returns = []
+            for r, d in zip(reversed(rewards_buf), reversed(dones_buf)):
+                R = r + GAMMA * R * (1.0 - d)
+                returns.insert(0, R)
+
+            returns_t = torch.stack(returns).detach()
+            values_t = torch.stack(values_buf)
+            log_probs_t = torch.stack(log_probs_buf)
+            entropies_t = torch.stack(entropies_buf)
+
+            advantages = returns_t - values_t.detach()
+            actor_loss = -(log_probs_t * advantages).mean()
+            critic_loss = (returns_t - values_t).pow(2).mean()
+            entropy_loss = entropies_t.mean()
+
+            loss = actor_loss + VALUE_COEF * critic_loss - ENTROPY_COEF * entropy_loss
+            optimizer.zero_grad()
+            loss.backward()
+            nn.utils.clip_grad_norm_(policy_net.parameters(), 0.5)
+            optimizer.step()
 
     except KeyboardInterrupt:
         pass
@@ -262,8 +250,8 @@ def train():
         print(f"train_seconds_to_finish: {seconds_to_finish:.1f}")
         print(f"train_best_score: {best_score}")
 
-        if len(total_rewards):
-            print(f"mean_episode_reward: {np.mean(total_rewards):.1f}")
+        if episode_rewards:
+            print(f"mean_episode_reward: {np.mean(episode_rewards):.1f}")
 
 
 if __name__ == "__main__":
