@@ -174,13 +174,17 @@ def train():
     if warm_start:
         policy_net.load_state_dict(torch.load(model_path, map_location=device))
         print(f"Warm start: loaded model from {model_path}")
+        # Freeze conv layers to preserve visual features; only update FC decision layers
+        for param in policy_net.conv.parameters():
+            param.requires_grad = False
     target_net = PolicyModel(n_actions).to(device)
     target_net.load_state_dict(policy_net.state_dict())
     target_net.eval()
 
     # Use smaller LR and fill buffer before learning when warm-starting
     fine_tune_lr = LR * 0.5 if warm_start else LR
-    optimizer = optim.RMSprop(policy_net.parameters(), lr=fine_tune_lr, alpha=0.95, eps=0.01, momentum=0.95)
+    trainable_params = [p for p in policy_net.parameters() if p.requires_grad]
+    optimizer = optim.RMSprop(trainable_params, lr=fine_tune_lr, alpha=0.95, eps=0.01, momentum=0.95)
     memory = ReplayBuffer(MEMORY_SIZE)
     steps_done = 0
     # Delay learning start when warm-starting to avoid corrupting weights before buffer has diverse data
