@@ -29,7 +29,6 @@ TARGET_UPDATE = 1000
 MEMORY_SIZE = 50000
 LR = 1e-4
 RENDER = True
-WARM_START = True  # Set True to load MODELS/model.pt; False for fresh start
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 warnings.filterwarnings("ignore")
@@ -171,7 +170,7 @@ def train():
     n_actions = env.action_space.n
     policy_net = PolicyModel(n_actions).to(device)
     model_path = "MODELS/model.pt"
-    warm_start = WARM_START and os.path.exists(model_path)
+    warm_start = os.path.exists(model_path)
     if warm_start:
         policy_net.load_state_dict(torch.load(model_path, map_location=device))
         print(f"Warm start: loaded model from {model_path}")
