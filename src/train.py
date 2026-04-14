@@ -20,7 +20,7 @@ from src.constants import TIME_BUDGET, MAX_EPISODE_STEPS, PRO_MOVEMENT
 from src.model import PolicyModel
 
 # Hyperparameters
-BATCH_SIZE = 128
+BATCH_SIZE = 256
 GAMMA = 0.99
 EPS_START = 1.0
 EPS_END = 0.02
@@ -121,8 +121,6 @@ class DistanceReward(gym.Wrapper):
         reward -= 0.1
         if info.get('flag_get', False):
             reward += 1000.0
-        elif terminated:
-            reward -= 50.0
         return obs, reward, terminated, truncated, info
 
 
