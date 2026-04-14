@@ -28,7 +28,7 @@ EPS_DECAY = 30000
 TARGET_UPDATE = 1000
 MEMORY_SIZE = 50000
 LR = 1e-4
-RENDER = False
+RENDER = True
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 warnings.filterwarnings("ignore")
@@ -109,14 +109,22 @@ class DistanceReward(gym.Wrapper):
     def __init__(self, env):
         super().__init__(env)
         self.curr_x = 0
+        self.max_x = 0
+
     def reset(self, **kwargs):
         self.curr_x = 0
+        self.max_x = 0
         return self.env.reset(**kwargs)
 
     def step(self, action):
         obs, reward, terminated, truncated, info = self.env.step(action)
         x_pos = info.get('x_pos', 0)
-        reward += (x_pos - self.curr_x) * 2.0
+        delta = x_pos - self.curr_x
+        reward += delta * 2.0
+        # Extra bonus for reaching new territory
+        if x_pos > self.max_x:
+            reward += (x_pos - self.max_x) * 3.0
+            self.max_x = x_pos
         self.curr_x = x_pos
         reward -= 0.1
         if info.get('flag_get', False):
