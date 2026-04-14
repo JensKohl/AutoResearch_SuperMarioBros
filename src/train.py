@@ -169,6 +169,11 @@ def train():
 
     n_actions = env.action_space.n
     policy_net = PolicyModel(n_actions).to(device)
+    model_path = "MODELS/model.pt"
+    warm_start = os.path.exists(model_path)
+    if warm_start:
+        policy_net.load_state_dict(torch.load(model_path, map_location=device))
+        print(f"Warm start: loaded model from {model_path}")
     target_net = PolicyModel(n_actions).to(device)
     target_net.load_state_dict(policy_net.state_dict())
     target_net.eval()
@@ -190,8 +195,9 @@ def train():
             episode_reward = 0
 
             for t in range(MAX_EPISODE_STEPS):
+                eps_start = 0.3 if warm_start else EPS_START
                 elapsed_frac = (time.time() - start_time) / TIME_BUDGET
-                eps_threshold = EPS_END + (EPS_START - EPS_END) * max(0.0, 1.0 - elapsed_frac / 0.8)
+                eps_threshold = EPS_END + (eps_start - EPS_END) * max(0.0, 1.0 - elapsed_frac / 0.8)
                 if random.random() > eps_threshold:
                     with torch.no_grad():
                         state_tensor = torch.FloatTensor(state).unsqueeze(0).to(device) / 255.0
