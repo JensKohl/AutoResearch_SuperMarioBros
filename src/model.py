@@ -14,9 +14,9 @@ class PolicyModel(nn.Module):
             nn.ReLU(),
         )
         self.fc = nn.Sequential(
-            nn.Linear(3136, 512),
+            nn.Linear(3136, 1024),
             nn.ReLU(),
-            nn.Linear(512, n_actions)
+            nn.Linear(1024, n_actions)
         )
 
     def forward(self, x):
