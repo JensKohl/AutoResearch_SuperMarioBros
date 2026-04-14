@@ -24,7 +24,7 @@ BATCH_SIZE = 128
 GAMMA = 0.99
 EPS_START = 1.0
 EPS_END = 0.02
-EPS_DECAY = 30000
+EPS_DECAY = 50000
 TARGET_UPDATE = 1000
 MEMORY_SIZE = 50000
 LR = 1e-4
@@ -118,6 +118,7 @@ class DistanceReward(gym.Wrapper):
         x_pos = info.get('x_pos', 0)
         reward += (x_pos - self.curr_x) * 2.0
         self.curr_x = x_pos
+        reward -= 0.1
         if info.get('flag_get', False):
             reward += 1000.0
         return obs, reward, terminated, truncated, info
