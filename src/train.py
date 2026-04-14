@@ -27,7 +27,7 @@ EPS_END = 0.02
 EPS_DECAY = 30000
 TARGET_UPDATE = 1000
 MEMORY_SIZE = 50000
-LR = 3e-4
+LR = 1e-4
 RENDER = True
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -230,6 +230,7 @@ def train():
                     loss = nn.SmoothL1Loss()(q_values.squeeze(), target_q_values)
                     optimizer.zero_grad()
                     loss.backward()
+                    nn.utils.clip_grad_norm_(policy_net.parameters(), 10)
                     optimizer.step()
 
                 if steps_done % TARGET_UPDATE == 0:
