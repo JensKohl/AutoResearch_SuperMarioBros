@@ -22,7 +22,6 @@ from src.model import PolicyModel
 # Hyperparameters
 BATCH_SIZE = 128
 GAMMA = 0.99
-N_STEP = 3  # n-step return length
 EPS_START = 1.0
 EPS_END = 0.02
 EPS_DECAY = 30000
@@ -122,7 +121,7 @@ class DistanceReward(gym.Wrapper):
         reward -= 0.1
         if info.get('flag_get', False):
             reward += 1000.0
-        return obs, reward, terminated, truncated, info
+        return obs, max(-1.0, min(1.0, reward)), terminated, truncated, info
 
 
 class FrameSkip(gym.Wrapper):
@@ -176,7 +175,6 @@ def train():
 
     optimizer = optim.RMSprop(policy_net.parameters(), lr=LR, alpha=0.95, eps=0.01, momentum=0.95)
     memory = ReplayBuffer(MEMORY_SIZE)
-    n_step_buf = deque()
     steps_done = 0
 
     start_time = time.time()
@@ -205,20 +203,7 @@ def train():
                 done = terminated or truncated
                 episode_reward += reward
 
-                # N-step return: accumulate N transitions before pushing
-                n_step_buf.append((state, action, reward, next_state, done))
-                if len(n_step_buf) == N_STEP:
-                    s0, a0 = n_step_buf[0][0], n_step_buf[0][1]
-                    R, last_ns, is_done = 0.0, n_step_buf[-1][3], False
-                    for i, (_, _, r, ns, d) in enumerate(n_step_buf):
-                        R += GAMMA**i * r
-                        if d:
-                            last_ns, is_done = ns, True
-                            break
-                    memory.push(s0, a0, R, last_ns, is_done)
-                    n_step_buf.popleft()
-                if done:
-                    n_step_buf.clear()
+                memory.push(state, action, reward, next_state, done)
                 state = next_state
 
                 current_time = info.get('time', 0)
@@ -240,7 +225,7 @@ def train():
                     q_values = policy_net(states).gather(1, actions)
                     with torch.no_grad():
                         next_q_values = target_net(next_states).max(1)[0]
-                        target_q_values = rewards + ((GAMMA**N_STEP) * next_q_values * (1 - dones))
+                        target_q_values = rewards + (GAMMA * next_q_values * (1 - dones))
 
                     loss = nn.SmoothL1Loss()(q_values.squeeze(), target_q_values)
                     optimizer.zero_grad()
