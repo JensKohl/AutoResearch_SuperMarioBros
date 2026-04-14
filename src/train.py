@@ -29,7 +29,7 @@ TARGET_UPDATE = 1000
 MEMORY_SIZE = 50000
 LR = 1e-4
 RENDER = True
-PHASE2_FRACTION = 0.6  # At this fraction of budget, cut LR and refresh buffer
+WARM_START = False  # Set True to load MODELS/model.pt; False for fresh start
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 warnings.filterwarnings("ignore")
@@ -142,16 +142,25 @@ class FrameSkip(gym.Wrapper):
         return obs, total_reward, terminated, truncated, info
 
 
-# --- Replay Buffer ---
+# --- Replay Buffer with high-x oversampling ---
 class ReplayBuffer:
+    """50% of each batch sampled from x_pos > X_BIAS_THRESHOLD when available."""
+    X_BIAS_THRESHOLD = 1200
+
     def __init__(self, capacity):
         self.buffer = deque(maxlen=capacity)
+        self.hard_buffer = deque(maxlen=capacity // 4)  # hard-zone transitions
 
-    def push(self, state, action, reward, next_state, done):
+    def push(self, state, action, reward, next_state, done, x_pos=0):
         self.buffer.append((state, action, reward, next_state, done))
+        if x_pos > self.X_BIAS_THRESHOLD:
+            self.hard_buffer.append((state, action, reward, next_state, done))
 
     def sample(self, batch_size):
-        batch = random.sample(self.buffer, batch_size)
+        n_hard = batch_size // 2 if len(self.hard_buffer) >= batch_size // 2 else 0
+        hard_batch = random.sample(list(self.hard_buffer), n_hard) if n_hard else []
+        main_batch = random.sample(list(self.buffer), batch_size - n_hard)
+        batch = hard_batch + main_batch
         states, actions, rewards, next_states, dones = zip(*batch)
         return np.array(states), actions, rewards, np.array(next_states), dones
 
@@ -178,7 +187,6 @@ def train():
     memory = ReplayBuffer(MEMORY_SIZE)
     steps_done = 0
     learn_start = BATCH_SIZE
-    phase2_triggered = False
 
     start_time = time.time()
     total_rewards = []
@@ -191,16 +199,6 @@ def train():
         while time.time() - start_time < TIME_BUDGET:
             state, info = env.reset()
             episode_reward = 0
-
-            # Phase 2 switch: at PHASE2_FRACTION of budget, cut LR and refresh buffer
-            elapsed_frac = (time.time() - start_time) / TIME_BUDGET
-            if elapsed_frac >= PHASE2_FRACTION and not phase2_triggered:
-                phase2_triggered = True
-                for pg in optimizer.param_groups:
-                    pg['lr'] = LR * (1.0 / 3.0)
-                memory = ReplayBuffer(MEMORY_SIZE)
-                learn_start = BATCH_SIZE
-                print(f"Phase 2: LR -> {LR/3:.2e}, buffer cleared")
 
             for t in range(MAX_EPISODE_STEPS):
                 elapsed_frac = (time.time() - start_time) / TIME_BUDGET
@@ -217,7 +215,8 @@ def train():
                 done = terminated or truncated
                 episode_reward += reward
 
-                memory.push(state, action, reward, next_state, done)
+                x_pos = info.get('x_pos', 0)
+                memory.push(state, action, reward, next_state, done, x_pos)
                 state = next_state
 
                 current_time = info.get('time', 0)
@@ -264,7 +263,7 @@ def train():
     finally:
         env.close()
         os.makedirs("MODELS", exist_ok=True)
-        torch.save(policy_net.state_dict(), "MODELS/model.pt")
+        torch.save(target_net.state_dict(), "MODELS/model.pt")  # target_net: time-avg stable policy
 
         training_seconds = time.time() - start_time
         print(f"training_seconds: {training_seconds:.1f}")
