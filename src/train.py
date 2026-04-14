@@ -24,7 +24,7 @@ N_WORKERS = 8       # parallel render=False environments — 8x data collection 
 BATCH_SIZE = 256
 BUFFER_SIZE = 200000
 GAMMA = 0.99
-LR = 1e-4  # Lower LR to preserve warm-start gains while learning new territory
+LR = 5e-5  # Very low LR to preserve warm-start knowledge while learning new territory
 TARGET_UPDATE_INTERVAL = 200   # update target net every N gradient steps
 TRAIN_START = 10000    # start training after this many transitions
 TRAIN_FREQ = 32        # train every N env steps (32/8 workers = every 4 per-worker steps)
@@ -32,7 +32,7 @@ TRAIN_FREQ = 32        # train every N env steps (32/8 workers = every 4 per-wor
 # Diverse epsilon per worker (ApeX-style): lower workers exploit, higher workers explore.
 # High-epsilon workers occasionally stumble past early obstacles, creating rare late-level
 # experience in the buffer that low-epsilon workers can then learn from.
-WORKER_EPSILONS = [0.05, 0.15, 0.25, 0.35, 0.50, 0.65, 0.80, 0.95]
+WORKER_EPSILONS = [0.01, 0.05, 0.10, 0.20, 0.30, 0.50, 0.70, 0.90]
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 warnings.filterwarnings("ignore")
@@ -157,15 +157,30 @@ def wrap_env(raw_env):
     return env
 
 
+HARD_X_THRESHOLD = 800   # transitions with x_pos > threshold go to hard buffer
+HARD_RATIO = 0.6         # fraction of each mini-batch from hard buffer (when available)
+
 class ReplayBuffer:
+    """Two-tier replay: main buffer + hard buffer (late-level transitions).
+    Mini-batches sample HARD_RATIO from hard buffer + rest from main buffer.
+    This prevents early-level experience from overwriting warm-start knowledge.
+    """
     def __init__(self, capacity):
         self.buf = deque(maxlen=capacity)
+        self.hard_buf = deque(maxlen=capacity // 4)  # 50k hard-buffer slots
 
-    def add(self, s, a, r, s2, done):
+    def add(self, s, a, r, s2, done, x_pos=0):
         self.buf.append((s, a, r, s2, done))
+        if x_pos > HARD_X_THRESHOLD:
+            self.hard_buf.append((s, a, r, s2, done))
 
     def sample(self, n):
-        batch = random.sample(self.buf, n)
+        n_hard = int(n * HARD_RATIO) if len(self.hard_buf) >= n // 2 else 0
+        n_main = n - n_hard
+        batch = random.sample(self.buf, n_main)
+        if n_hard > 0:
+            batch += random.sample(self.hard_buf, n_hard)
+        random.shuffle(batch)
         s, a, r, s2, d = zip(*batch)
         return (
             torch.FloatTensor(np.array(s)).to(device) / 255.0,
@@ -242,7 +257,7 @@ def train():
                 done = terminated or truncated
                 ep_reward[i] += reward
 
-                buffer.add(states[i], action, reward, next_state, float(done))
+                buffer.add(states[i], action, reward, next_state, float(done), x_pos=info.get('x_pos', 0))
 
                 current_time = info.get('time', 0)
                 current_score = info.get('score', 0)
