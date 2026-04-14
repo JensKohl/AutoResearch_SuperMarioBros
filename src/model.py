@@ -1,10 +1,15 @@
 import torch
 import torch.nn as nn
-from torch.distributions import Categorical
 
 
 class PolicyModel(nn.Module):
-    """Actor-Critic CNN for PPO: shared conv backbone, separate actor/critic heads."""
+    """Dueling DQN Q-network: shared CNN + separate value and advantage streams.
+
+    Q(s,a) = V(s) + A(s,a) - mean_a(A(s,a))
+
+    Dueling architecture (Wang et al. 2016) gives more accurate Q-values by
+    separately estimating state value V(s) and per-action advantage A(s,a).
+    """
     def __init__(self, n_actions):
         super().__init__()
         self.conv = nn.Sequential(
@@ -15,33 +20,17 @@ class PolicyModel(nn.Module):
             nn.Conv2d(32, 64, kernel_size=3, stride=1),
             nn.ReLU(),
         )
-        self.actor = nn.Sequential(
-            nn.Linear(3136, 512),
-            nn.ReLU(),
-            nn.Linear(512, n_actions)
-        )
-        self.critic = nn.Sequential(
-            nn.Linear(3136, 512),
-            nn.ReLU(),
+        self.value = nn.Sequential(
+            nn.Linear(3136, 512), nn.ReLU(),
             nn.Linear(512, 1)
         )
-
-    def _features(self, x):
-        return self.conv(x).view(x.size(0), -1)
-
-    def act(self, x):
-        """Sample action and return (action, log_prob, value)."""
-        f = self._features(x)
-        dist = Categorical(logits=self.actor(f))
-        action = dist.sample()
-        return action, dist.log_prob(action), self.critic(f).squeeze(-1)
-
-    def evaluate(self, x, actions):
-        """Evaluate actions for PPO update. Returns (log_probs, values, entropy)."""
-        f = self._features(x)
-        dist = Categorical(logits=self.actor(f))
-        return dist.log_prob(actions), self.critic(f).squeeze(-1), dist.entropy()
+        self.advantage = nn.Sequential(
+            nn.Linear(3136, 512), nn.ReLU(),
+            nn.Linear(512, n_actions)
+        )
 
     def forward(self, x):
-        """Greedy action logits for evaluate.py compatibility."""
-        return self.actor(self._features(x))
+        f = self.conv(x).view(x.size(0), -1)
+        v = self.value(f)
+        a = self.advantage(f)
+        return v + a - a.mean(1, keepdim=True)
