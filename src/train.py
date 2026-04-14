@@ -28,7 +28,7 @@ EPS_DECAY = 30000
 TARGET_UPDATE = 1000
 MEMORY_SIZE = 50000
 LR = 1e-4
-RENDER = True
+RENDER = False
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 warnings.filterwarnings("ignore")
