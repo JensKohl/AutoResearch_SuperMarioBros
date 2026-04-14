@@ -29,7 +29,7 @@ ENTROPY_COEF = 0.001  # Low entropy: push policy toward determinism for greedy e
 VALUE_COEF = 0.5
 GAE_LAMBDA = 0.95
 GAMMA = 0.99
-LR = 2.5e-4
+LR = 1e-4           # Reduced from 2.5e-4 for more stable learning
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 warnings.filterwarnings("ignore")
@@ -166,22 +166,37 @@ def compute_gae(rewards, values, dones, next_value):
     return advantages, returns
 
 
-GREEDY_CHECK_INTERVAL = 15  # run greedy eval every N rollouts to checkpoint best model
+GREEDY_CHECK_INTERVAL = 10  # run greedy eval every N rollouts
 
 
-def greedy_eval_x(model, eval_env):
-    """Run one greedy (argmax) episode; return max x_pos reached."""
-    state, info = eval_env.reset()
-    max_x = 0
-    for _ in range(MAX_EPISODE_STEPS):
-        st = torch.FloatTensor(state).unsqueeze(0).to(device) / 255.0
-        with torch.no_grad():
-            action = model(st).max(1)[1].item()
-        state, _, terminated, truncated, info = eval_env.step(action)
-        max_x = max(max_x, info.get('x_pos', 0))
-        if terminated or truncated:
-            break
-    return max_x
+def greedy_eval(model, eval_env, n_episodes=5):
+    """Run N greedy (argmax) episodes; return (best_x, flag_get_any).
+
+    Running multiple episodes increases the chance of finding a deterministically
+    capable path - if even one greedy episode finishes, we've found a model worth saving.
+    """
+    best_x = 0
+    flag_get_any = False
+    for _ in range(n_episodes):
+        state, info = eval_env.reset()
+        ep_max_x = 0
+        ep_flag = False
+        for _ in range(MAX_EPISODE_STEPS):
+            st = torch.FloatTensor(state).unsqueeze(0).to(device) / 255.0
+            with torch.no_grad():
+                action = model(st).max(1)[1].item()
+            state, _, terminated, truncated, info = eval_env.step(action)
+            ep_max_x = max(ep_max_x, info.get('x_pos', 0))
+            if info.get('flag_get', False):
+                ep_flag = True
+                break
+            if terminated or truncated:
+                break
+        best_x = max(best_x, ep_max_x)
+        if ep_flag:
+            flag_get_any = True
+            break  # found a finishing run, no need to continue
+    return best_x, flag_get_any
 
 
 def train():
@@ -207,7 +222,6 @@ def train():
     try:
         while time.time() - start_time < TIME_BUDGET:
             # ---- Collect rollout from all workers ----
-            # Per-worker buffers
             w_states  = [[] for _ in range(N_WORKERS)]
             w_actions = [[] for _ in range(N_WORKERS)]
             w_lp      = [[] for _ in range(N_WORKERS)]
@@ -215,6 +229,7 @@ def train():
             w_rewards = [[] for _ in range(N_WORKERS)]
             w_dones   = [[] for _ in range(N_WORKERS)]
             w_ep_r    = [0.0] * N_WORKERS
+            stochastic_flag_this_rollout = False
 
             for step in range(N_STEPS):
                 if time.time() - start_time >= TIME_BUDGET:
@@ -227,6 +242,14 @@ def train():
                     next_state, reward, terminated, truncated, info = envs[i].step(action.item())
                     done = terminated or truncated
                     w_ep_r[i] += reward
+
+                    # Detect stochastic flag_get: save model immediately
+                    if info.get('flag_get', False) and not stochastic_flag_this_rollout:
+                        stochastic_flag_this_rollout = True
+                        os.makedirs("MODELS", exist_ok=True)
+                        torch.save({k: v.cpu() for k, v in model.state_dict().items()}, "MODELS/model.pt")
+                        model_saved = True
+                        print(f"  *** Stochastic flag_get! Model saved at update {update_count} ***")
 
                     w_states[i].append(states[i])
                     w_actions[i].append(action.item())
@@ -306,10 +329,17 @@ def train():
 
             update_count += 1
 
-            # Greedy checkpoint: periodically run deterministic episode, save if best
+            # Greedy checkpoint: run 5 deterministic episodes, save if best x or flag achieved
             if update_count % GREEDY_CHECK_INTERVAL == 0:
-                gx = greedy_eval_x(model, eval_env)
-                if gx > best_greedy_x:
+                gx, gflag = greedy_eval(model, eval_env, n_episodes=5)
+                if gflag:
+                    # Greedy policy can finish! Always save this.
+                    best_greedy_x = gx
+                    model_saved = True
+                    os.makedirs("MODELS", exist_ok=True)
+                    torch.save({k: v.cpu() for k, v in model.state_dict().items()}, "MODELS/model.pt")
+                    print(f"  *** Greedy FLAG! x_dist={gx} (saved) ***")
+                elif gx > best_greedy_x:
                     best_greedy_x = gx
                     model_saved = True
                     os.makedirs("MODELS", exist_ok=True)
@@ -334,7 +364,6 @@ def train():
         eval_env.close()
         os.makedirs("MODELS", exist_ok=True)
         if not model_saved:
-            # No greedy checkpoint was saved yet — save final model
             torch.save({k: v.cpu() for k, v in model.state_dict().items()}, "MODELS/model.pt")
 
         training_seconds = time.time() - start_time
