@@ -26,9 +26,10 @@ EPS_START = 1.0
 EPS_END = 0.02
 EPS_DECAY = 30000
 TARGET_UPDATE = 1000
-MEMORY_SIZE = 200000
+MEMORY_SIZE = 50000
 LR = 1e-4
 RENDER = True
+PHASE2_FRACTION = 0.6  # At this fraction of budget, cut LR and refresh buffer
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 warnings.filterwarnings("ignore")
@@ -114,16 +115,13 @@ class DistanceReward(gym.Wrapper):
         return self.env.reset(**kwargs)
 
     def step(self, action):
-        obs, _, terminated, truncated, info = self.env.step(action)
+        obs, reward, terminated, truncated, info = self.env.step(action)
         x_pos = info.get('x_pos', 0)
-        x_delta = x_pos - self.curr_x
-        # Scale reward higher in the later (harder) parts of the level
-        # x_pos=0→800 gives multiplier 2x, x_pos=1800 gives 4x, x_pos=2800 gives 6x
-        pos_scale = 2.0 * (1.0 + max(0.0, x_pos - 800) / 1000.0)
-        reward = x_delta * pos_scale
+        reward += (x_pos - self.curr_x) * 2.0
         self.curr_x = x_pos
+        reward -= 0.1
         if info.get('flag_get', False):
-            reward += 10000.0  # match eval metric scale: finishing the level is everything
+            reward += 1000.0
         return obs, reward, terminated, truncated, info
 
 
@@ -180,6 +178,7 @@ def train():
     memory = ReplayBuffer(MEMORY_SIZE)
     steps_done = 0
     learn_start = BATCH_SIZE
+    phase2_triggered = False
 
     start_time = time.time()
     total_rewards = []
@@ -192,6 +191,16 @@ def train():
         while time.time() - start_time < TIME_BUDGET:
             state, info = env.reset()
             episode_reward = 0
+
+            # Phase 2 switch: at PHASE2_FRACTION of budget, cut LR and refresh buffer
+            elapsed_frac = (time.time() - start_time) / TIME_BUDGET
+            if elapsed_frac >= PHASE2_FRACTION and not phase2_triggered:
+                phase2_triggered = True
+                for pg in optimizer.param_groups:
+                    pg['lr'] = LR * (1.0 / 3.0)
+                memory = ReplayBuffer(MEMORY_SIZE)
+                learn_start = BATCH_SIZE
+                print(f"Phase 2: LR → {LR/3:.2e}, buffer cleared")
 
             for t in range(MAX_EPISODE_STEPS):
                 elapsed_frac = (time.time() - start_time) / TIME_BUDGET
