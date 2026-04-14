@@ -24,7 +24,7 @@ N_WORKERS = 8       # parallel render=False environments — 8x data collection 
 BATCH_SIZE = 256
 BUFFER_SIZE = 200000
 GAMMA = 0.99
-LR = 5e-5  # Very low LR to preserve warm-start knowledge while learning new territory
+LR = 1e-4
 TARGET_UPDATE_INTERVAL = 200   # update target net every N gradient steps
 TRAIN_START = 10000    # start training after this many transitions
 TRAIN_FREQ = 32        # train every N env steps (32/8 workers = every 4 per-worker steps)
@@ -157,30 +157,15 @@ def wrap_env(raw_env):
     return env
 
 
-HARD_X_THRESHOLD = 800   # transitions with x_pos > threshold go to hard buffer
-HARD_RATIO = 0.6         # fraction of each mini-batch from hard buffer (when available)
-
 class ReplayBuffer:
-    """Two-tier replay: main buffer + hard buffer (late-level transitions).
-    Mini-batches sample HARD_RATIO from hard buffer + rest from main buffer.
-    This prevents early-level experience from overwriting warm-start knowledge.
-    """
     def __init__(self, capacity):
         self.buf = deque(maxlen=capacity)
-        self.hard_buf = deque(maxlen=capacity // 4)  # 50k hard-buffer slots
 
     def add(self, s, a, r, s2, done, x_pos=0):
         self.buf.append((s, a, r, s2, done))
-        if x_pos > HARD_X_THRESHOLD:
-            self.hard_buf.append((s, a, r, s2, done))
 
     def sample(self, n):
-        n_hard = int(n * HARD_RATIO) if len(self.hard_buf) >= n // 2 else 0
-        n_main = n - n_hard
-        batch = random.sample(self.buf, n_main)
-        if n_hard > 0:
-            batch += random.sample(self.hard_buf, n_hard)
-        random.shuffle(batch)
+        batch = random.sample(self.buf, n)
         s, a, r, s2, d = zip(*batch)
         return (
             torch.FloatTensor(np.array(s)).to(device) / 255.0,
@@ -280,7 +265,9 @@ def train():
             if len(buffer) >= TRAIN_START and env_steps % TRAIN_FREQ == 0:
                 s, a, r, s2, d = buffer.sample(BATCH_SIZE)
                 with torch.no_grad():
-                    next_q = target(s2).max(1)[0]
+                    # Double DQN: online net selects action, target net evaluates
+                    next_actions = model(s2).argmax(1)
+                    next_q = target(s2).gather(1, next_actions.unsqueeze(1)).squeeze(1)
                     target_q = r + GAMMA * next_q * (1 - d)
                 current_q = model(s).gather(1, a.unsqueeze(1)).squeeze(1)
                 loss = nn.MSELoss()(current_q, target_q)
