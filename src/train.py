@@ -21,7 +21,7 @@ from src.model import PolicyModel
 
 # Hyperparameters
 BATCH_SIZE = 128
-GAMMA = 0.99
+GAMMA = 0.995
 EPS_START = 1.0
 EPS_END = 0.02
 EPS_DECAY = 30000
@@ -29,7 +29,6 @@ TARGET_UPDATE = 1000
 MEMORY_SIZE = 50000
 LR = 1e-4
 RENDER = True
-WARM_START = False  # Set True to load MODELS/model.pt; False for fresh start
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 warnings.filterwarnings("ignore")
@@ -178,7 +177,6 @@ def train():
     memory = ReplayBuffer(MEMORY_SIZE)
     steps_done = 0
     learn_start = BATCH_SIZE
-    best_ep_reward = -float('inf')  # for best-model checkpointing
 
     start_time = time.time()
     total_rewards = []
@@ -243,11 +241,6 @@ def train():
                     break
 
             total_rewards.append(episode_reward)
-            # Save best model checkpoint based on episodic reward
-            os.makedirs("MODELS", exist_ok=True)
-            if episode_reward > best_ep_reward:
-                best_ep_reward = episode_reward
-                torch.save(policy_net.state_dict(), "MODELS/model.pt")
             gpu_temp = get_gpu_temp()
             print(f"Episode {len(total_rewards):>3} | Reward: {episode_reward:>6.1f} | Epsilon: {eps_threshold:>5.3f} | Steps: {steps_done} | GPU: {gpu_temp}°C")
             if gpu_temp >= MAX_GPU_TEMP:
@@ -258,7 +251,8 @@ def train():
         pass
     finally:
         env.close()
-        # model.pt already saved at best episodic reward — don't overwrite with final
+        os.makedirs("MODELS", exist_ok=True)
+        torch.save(policy_net.state_dict(), "MODELS/model.pt")
 
         training_seconds = time.time() - start_time
         print(f"training_seconds: {training_seconds:.1f}")
