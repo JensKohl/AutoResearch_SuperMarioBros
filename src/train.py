@@ -25,11 +25,14 @@ N_STEPS = 128       # steps per worker per rollout
 CLIP_EPS = 0.2
 K_EPOCHS = 4
 MINI_BATCH = 256    # mini-batch size (out of N_WORKERS*N_STEPS=1024 per rollout)
-ENTROPY_COEF = 0.001  # Low entropy: push policy toward determinism for greedy eval
 VALUE_COEF = 0.5
 GAE_LAMBDA = 0.95
 GAMMA = 0.99
-LR = 1e-4           # Reduced from 2.5e-4 for more stable learning
+LR = 1e-4
+
+# Two-phase entropy: stochastic phase uses 0.01, greedy phase uses 0.0
+ENTROPY_COEF_STOCHASTIC = 0.01
+ENTROPY_COEF_GREEDY = 0.0
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 warnings.filterwarnings("ignore")
@@ -170,11 +173,7 @@ GREEDY_CHECK_INTERVAL = 10  # run greedy eval every N rollouts
 
 
 def greedy_eval(model, eval_env, n_episodes=5):
-    """Run N greedy (argmax) episodes; return (best_x, flag_get_any).
-
-    Running multiple episodes increases the chance of finding a deterministically
-    capable path - if even one greedy episode finishes, we've found a model worth saving.
-    """
+    """Run N greedy (argmax) episodes; return (best_x, flag_get_any)."""
     best_x = 0
     flag_get_any = False
     for _ in range(n_episodes):
@@ -195,14 +194,34 @@ def greedy_eval(model, eval_env, n_episodes=5):
         best_x = max(best_x, ep_max_x)
         if ep_flag:
             flag_get_any = True
-            break  # found a finishing run, no need to continue
+            break
     return best_x, flag_get_any
 
 
+def collect_action(model, state_tensor, greedy_mode):
+    """Sample or argmax action; always return (action, log_prob, value).
+
+    In greedy_mode we use argmax for the action but still compute the log_prob
+    under the current distribution. This lets PPO update toward making the
+    greedy action even more probable (deterministic fine-tuning).
+    """
+    from torch.distributions import Categorical
+    with torch.no_grad():
+        f = model._features(state_tensor)
+        logits = model.actor(f)
+        value = model.critic(f).squeeze(-1)
+        dist = Categorical(logits=logits)
+        if greedy_mode:
+            action = logits.max(1)[1]
+        else:
+            action = dist.sample()
+        lp = dist.log_prob(action)
+    return action, lp, value
+
+
 def train():
-    # Create N_WORKERS render=False environments
     envs = [wrap_env(make_env(render=False)) for _ in range(N_WORKERS)]
-    eval_env = wrap_env(make_env(render=False))  # greedy checkpoint env
+    eval_env = wrap_env(make_env(render=False))
     states = [env.reset()[0] for env in envs]
 
     n_actions = envs[0].action_space.n
@@ -214,6 +233,7 @@ def train():
     update_count = 0
     best_greedy_x = 0
     model_saved = False
+    greedy_mode = False  # Two-phase: start stochastic, switch to greedy after flag_get
 
     best_total_reward = -float('inf')
     best_score = 0
@@ -229,27 +249,25 @@ def train():
             w_rewards = [[] for _ in range(N_WORKERS)]
             w_dones   = [[] for _ in range(N_WORKERS)]
             w_ep_r    = [0.0] * N_WORKERS
-            stochastic_flag_this_rollout = False
 
             for step in range(N_STEPS):
                 if time.time() - start_time >= TIME_BUDGET:
                     break
                 for i in range(N_WORKERS):
                     st = torch.FloatTensor(states[i]).unsqueeze(0).to(device) / 255.0
-                    with torch.no_grad():
-                        action, lp, value = model.act(st)
+                    action, lp, value = collect_action(model, st, greedy_mode)
 
                     next_state, reward, terminated, truncated, info = envs[i].step(action.item())
                     done = terminated or truncated
                     w_ep_r[i] += reward
 
-                    # Detect stochastic flag_get: save model immediately
-                    if info.get('flag_get', False) and not stochastic_flag_this_rollout:
-                        stochastic_flag_this_rollout = True
+                    # Phase switch: stochastic flag_get -> enter greedy fine-tuning phase
+                    if info.get('flag_get', False) and not greedy_mode:
+                        greedy_mode = True
                         os.makedirs("MODELS", exist_ok=True)
                         torch.save({k: v.cpu() for k, v in model.state_dict().items()}, "MODELS/model.pt")
                         model_saved = True
-                        print(f"  *** Stochastic flag_get! Model saved at update {update_count} ***")
+                        print(f"  *** Phase switch to GREEDY MODE at update {update_count} (stochastic flag_get!) ***")
 
                     w_states[i].append(states[i])
                     w_actions[i].append(action.item())
@@ -295,6 +313,8 @@ def train():
             if not all_states:
                 continue
 
+            entropy_coef = ENTROPY_COEF_GREEDY if greedy_mode else ENTROPY_COEF_STOCHASTIC
+
             N_total = len(all_states)
             states_t   = torch.FloatTensor(np.array(all_states)).to(device) / 255.0
             actions_t  = torch.LongTensor(all_actions).to(device)
@@ -318,7 +338,7 @@ def train():
                                      torch.clamp(ratio, 1 - CLIP_EPS, 1 + CLIP_EPS) * a)
                     actor_loss  = -surr.mean()
                     critic_loss = nn.MSELoss()(vals, ret_t[mb])
-                    loss = actor_loss + VALUE_COEF * critic_loss - ENTROPY_COEF * entropy.mean()
+                    loss = actor_loss + VALUE_COEF * critic_loss - entropy_coef * entropy.mean()
 
                     if torch.isnan(loss):
                         continue
@@ -329,11 +349,10 @@ def train():
 
             update_count += 1
 
-            # Greedy checkpoint: run 5 deterministic episodes, save if best x or flag achieved
+            # Greedy checkpoint: 5 episodes, save if flag or new best x
             if update_count % GREEDY_CHECK_INTERVAL == 0:
                 gx, gflag = greedy_eval(model, eval_env, n_episodes=5)
                 if gflag:
-                    # Greedy policy can finish! Always save this.
                     best_greedy_x = gx
                     model_saved = True
                     os.makedirs("MODELS", exist_ok=True)
@@ -344,14 +363,15 @@ def train():
                     model_saved = True
                     os.makedirs("MODELS", exist_ok=True)
                     torch.save({k: v.cpu() for k, v in model.state_dict().items()}, "MODELS/model.pt")
-                    print(f"  Greedy checkpoint: x_dist={best_greedy_x} (saved)")
+                    print(f"  Greedy checkpoint: x_dist={best_greedy_x} (saved) [{'greedy' if greedy_mode else 'stochastic'} phase]")
                 else:
-                    print(f"  Greedy check: x_dist={gx} (best={best_greedy_x})")
+                    print(f"  Greedy check: x_dist={gx} (best={best_greedy_x}) [{'greedy' if greedy_mode else 'stochastic'} phase]")
 
             if total_ep_rewards:
                 gpu_temp = get_gpu_temp()
                 mean_r = np.mean(total_ep_rewards[-N_WORKERS:])
-                print(f"Update {update_count:>4} | MeanReward: {mean_r:>7.1f} | Episodes: {len(total_ep_rewards)} | GPU: {gpu_temp}C")
+                phase = "G" if greedy_mode else "S"
+                print(f"Update {update_count:>4} [{phase}] | MeanReward: {mean_r:>7.1f} | Episodes: {len(total_ep_rewards)} | GPU: {gpu_temp}C")
                 if gpu_temp >= MAX_GPU_TEMP:
                     print(f"GPU {gpu_temp}C >= {MAX_GPU_TEMP}C -- stopping.")
                     break
