@@ -121,7 +121,7 @@ class DistanceReward(gym.Wrapper):
         reward -= 0.1
         if info.get('flag_get', False):
             reward += 1000.0
-        return obs, max(-1.0, min(1.0, reward)), terminated, truncated, info
+        return obs, reward, terminated, truncated, info
 
 
 class FrameSkip(gym.Wrapper):
