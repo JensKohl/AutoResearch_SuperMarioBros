@@ -22,17 +22,19 @@ from src.model import PolicyModel
 # DQN hyperparameters
 N_WORKERS = 8       # parallel render=False environments — 8x data collection vs single env
 BATCH_SIZE = 256
-BUFFER_SIZE = 200000
+BUFFER_SIZE = 50000
 GAMMA = 0.99
 LR = 1e-4
-TARGET_UPDATE_INTERVAL = 200   # update target net every N gradient steps
+TARGET_UPDATE_INTERVAL = 500   # update target net every N gradient steps (slower for stability)
 TRAIN_START = 10000    # start training after this many transitions
 TRAIN_FREQ = 32        # train every N env steps (32/8 workers = every 4 per-worker steps)
 
 # Diverse epsilon per worker (ApeX-style): lower workers exploit, higher workers explore.
 # High-epsilon workers occasionally stumble past early obstacles, creating rare late-level
 # experience in the buffer that low-epsilon workers can then learn from.
-WORKER_EPSILONS = [0.01, 0.05, 0.10, 0.20, 0.30, 0.50, 0.70, 0.90]
+# Workers 0-3: pure greedy (epsilon=0) to consistently reach x=1435 and learn from it.
+# Workers 4-7: medium-high exploration to occasionally stumble past x=1435.
+WORKER_EPSILONS = [0.0, 0.0, 0.0, 0.0, 0.30, 0.50, 0.70, 0.90]
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 warnings.filterwarnings("ignore")
