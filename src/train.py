@@ -19,23 +19,22 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from src.constants import TIME_BUDGET, MAX_EPISODE_STEPS, PRO_MOVEMENT
 from src.model import PolicyModel
 
-# PPO Hyperparameters
-N_STEPS = 256       # steps per rollout
-CLIP_EPS = 0.1      # PPO clip range
-K_EPOCHS = 4        # update epochs per rollout
-MINI_BATCH = 64     # mini-batch size for PPO updates
-ENTROPY_COEF = 0.01 # entropy bonus coefficient
-VALUE_COEF = 0.5    # value loss coefficient
+# Hyperparameters
+BATCH_SIZE = 128
 GAMMA = 0.99
-GAE_LAMBDA = 0.95
-LR = 2.5e-4
+EPS_START = 1.0
+EPS_END = 0.02
+EPS_DECAY = 30000
+TARGET_UPDATE = 1000
+MEMORY_SIZE = 50000
+LR = 1e-4
 RENDER = True
+WARM_START = False  # Set True to load MODELS/model.pt; False for fresh start
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 warnings.filterwarnings("ignore")
 
-MAX_GPU_TEMP = 85
-
+MAX_GPU_TEMP = 85  # °C — stop training gracefully if exceeded
 
 def get_gpu_temp():
     try:
@@ -50,7 +49,7 @@ def get_gpu_temp():
 
 def make_env(render=False):
     env = gym_super_mario_bros.make('SuperMarioBros-v0')
-    env = env.env
+    env = env.env  # unwrap gym 0.26 TimeLimit which expects 5-tuple but base env returns 4-tuple
     env = JoypadSpace(env, PRO_MOVEMENT)
     env = shimmy.GymV21CompatibilityV0(env=env, render_mode='human' if render else None)
     return env
@@ -111,7 +110,6 @@ class DistanceReward(gym.Wrapper):
     def __init__(self, env):
         super().__init__(env)
         self.curr_x = 0
-
     def reset(self, **kwargs):
         self.curr_x = 0
         return self.env.reset(**kwargs)
@@ -144,19 +142,24 @@ class FrameSkip(gym.Wrapper):
         return obs, total_reward, terminated, truncated, info
 
 
-def compute_gae(rewards, values, dones, next_value):
-    """Compute Generalized Advantage Estimation."""
-    advantages = []
-    gae = 0.0
-    for t in reversed(range(len(rewards))):
-        nv = next_value if t == len(rewards) - 1 else values[t + 1]
-        delta = rewards[t] + GAMMA * nv * (1 - dones[t]) - values[t]
-        gae = delta + GAMMA * GAE_LAMBDA * (1 - dones[t]) * gae
-        advantages.insert(0, gae)
-    returns = [a + v for a, v in zip(advantages, values)]
-    return advantages, returns
+# --- Replay Buffer ---
+class ReplayBuffer:
+    def __init__(self, capacity):
+        self.buffer = deque(maxlen=capacity)
+
+    def push(self, state, action, reward, next_state, done):
+        self.buffer.append((state, action, reward, next_state, done))
+
+    def sample(self, batch_size):
+        batch = random.sample(self.buffer, batch_size)
+        states, actions, rewards, next_states, dones = zip(*batch)
+        return np.array(states), actions, rewards, np.array(next_states), dones
+
+    def __len__(self):
+        return len(self.buffer)
 
 
+# --- Training Loop ---
 def train():
     env = make_env(render=RENDER)
     env = FrameSkip(env, skip=3)
@@ -166,42 +169,46 @@ def train():
     env = FrameStack(env, k=4)
 
     n_actions = env.action_space.n
-    model = PolicyModel(n_actions).to(device)
-    optimizer = optim.Adam(model.parameters(), lr=LR)
+    policy_net = PolicyModel(n_actions).to(device)
+    target_net = PolicyModel(n_actions).to(device)
+    target_net.load_state_dict(policy_net.state_dict())
+    target_net.eval()
+
+    optimizer = optim.RMSprop(policy_net.parameters(), lr=LR, alpha=0.95, eps=0.01, momentum=0.95)
+    memory = ReplayBuffer(MEMORY_SIZE)
+    steps_done = 0
+    learn_start = BATCH_SIZE
+    best_ep_reward = -float('inf')  # for best-model checkpointing
 
     start_time = time.time()
     total_rewards = []
-    update_count = 0
 
     best_total_reward = -float('inf')
     best_score = 0
     best_time = 0
 
-    state, info = env.reset()
-
     try:
         while time.time() - start_time < TIME_BUDGET:
-            # --- Collect rollout ---
-            states_buf, actions_buf, log_probs_buf = [], [], []
-            rewards_buf, values_buf, dones_buf = [], [], []
-            episode_reward = 0.0
-            episode_done = False
+            state, info = env.reset()
+            episode_reward = 0
 
-            for _ in range(N_STEPS):
-                state_t = torch.FloatTensor(state).unsqueeze(0).to(device) / 255.0
-                with torch.no_grad():
-                    action, log_prob, value = model.act(state_t)
+            for t in range(MAX_EPISODE_STEPS):
+                elapsed_frac = (time.time() - start_time) / TIME_BUDGET
+                eps_threshold = EPS_END + (EPS_START - EPS_END) * max(0.0, 1.0 - elapsed_frac / 0.8)
+                if random.random() > eps_threshold:
+                    with torch.no_grad():
+                        state_tensor = torch.FloatTensor(state).unsqueeze(0).to(device) / 255.0
+                        action = policy_net(state_tensor).max(1)[1].view(1, 1).item()
+                else:
+                    action = env.action_space.sample()
+                steps_done += 1
 
-                next_state, reward, terminated, truncated, info = env.step(action.item())
+                next_state, reward, terminated, truncated, info = env.step(action)
                 done = terminated or truncated
                 episode_reward += reward
 
-                states_buf.append(state)
-                actions_buf.append(action.item())
-                log_probs_buf.append(log_prob.item())
-                rewards_buf.append(reward)
-                values_buf.append(value.item())
-                dones_buf.append(float(done))
+                memory.push(state, action, reward, next_state, done)
+                state = next_state
 
                 current_time = info.get('time', 0)
                 current_score = info.get('score', 0)
@@ -211,77 +218,47 @@ def train():
                     best_score = current_score
                     best_time = current_time
 
-                state = next_state
-                if done:
-                    total_rewards.append(episode_reward)
-                    gpu_temp = get_gpu_temp()
-                    print(f"Episode {len(total_rewards):>3} | Reward: {episode_reward:>6.1f} | Updates: {update_count} | GPU: {gpu_temp}°C")
-                    if gpu_temp >= MAX_GPU_TEMP:
-                        print(f"GPU temp {gpu_temp}°C >= {MAX_GPU_TEMP}°C — stopping.")
-                        raise KeyboardInterrupt
-                    episode_reward = 0.0
-                    state, info = env.reset()
+                if len(memory) > learn_start:
+                    states, actions, rewards, next_states, dones = memory.sample(BATCH_SIZE)
+                    states = torch.FloatTensor(states).to(device) / 255.0
+                    actions = torch.LongTensor(actions).unsqueeze(1).to(device)
+                    rewards = torch.FloatTensor(rewards).to(device)
+                    next_states = torch.FloatTensor(next_states).to(device) / 255.0
+                    dones = torch.FloatTensor(dones).to(device)
 
-                if time.time() - start_time >= TIME_BUDGET:
-                    break
+                    q_values = policy_net(states).gather(1, actions)
+                    with torch.no_grad():
+                        next_q_values = target_net(next_states).max(1)[0]
+                        target_q_values = rewards + (GAMMA * next_q_values * (1 - dones))
 
-            # Bootstrap value for last state
-            with torch.no_grad():
-                last_state_t = torch.FloatTensor(state).unsqueeze(0).to(device) / 255.0
-                _, _, next_value = model.act(last_state_t)
-                next_value = next_value.item() * (1 - dones_buf[-1])
-
-            advantages, returns = compute_gae(rewards_buf, values_buf, dones_buf, next_value)
-
-            # Convert to tensors
-            states_t = torch.FloatTensor(np.array(states_buf)).to(device) / 255.0
-            actions_t = torch.LongTensor(actions_buf).to(device)
-            old_log_probs_t = torch.FloatTensor(log_probs_buf).to(device)
-            advantages_t = torch.FloatTensor(advantages).to(device)
-            returns_t = torch.FloatTensor(returns).to(device)
-
-            # Normalize advantages and returns for stability
-            advantages_t = (advantages_t - advantages_t.mean()) / (advantages_t.std() + 1e-8)
-            returns_t = (returns_t - returns_t.mean()) / (returns_t.std() + 1e-8)
-
-            # --- PPO update ---
-            indices = np.arange(N_STEPS)
-            for _ in range(K_EPOCHS):
-                np.random.shuffle(indices)
-                for start in range(0, N_STEPS, MINI_BATCH):
-                    mb = indices[start:start + MINI_BATCH]
-                    mb_states = states_t[mb]
-                    mb_actions = actions_t[mb]
-                    mb_old_lp = old_log_probs_t[mb]
-                    mb_adv = advantages_t[mb]
-                    mb_ret = returns_t[mb]
-
-                    log_probs, values, entropy = model.evaluate(mb_states, mb_actions)
-
-                    ratio = torch.exp(log_probs - mb_old_lp)
-                    surr1 = ratio * mb_adv
-                    surr2 = torch.clamp(ratio, 1 - CLIP_EPS, 1 + CLIP_EPS) * mb_adv
-                    actor_loss = -torch.min(surr1, surr2).mean()
-                    critic_loss = nn.MSELoss()(values, mb_ret)
-                    entropy_loss = -entropy.mean()
-
-                    loss = actor_loss + VALUE_COEF * critic_loss + ENTROPY_COEF * entropy_loss
-
-                    if torch.isnan(loss):
-                        continue
+                    loss = nn.SmoothL1Loss()(q_values.squeeze(), target_q_values)
                     optimizer.zero_grad()
                     loss.backward()
-                    nn.utils.clip_grad_norm_(model.parameters(), 0.5)
                     optimizer.step()
 
-                update_count += 1
+                if steps_done % TARGET_UPDATE == 0:
+                    target_net.load_state_dict(policy_net.state_dict())
+
+                if done or (time.time() - start_time >= TIME_BUDGET):
+                    break
+
+            total_rewards.append(episode_reward)
+            # Save best model checkpoint based on episodic reward
+            os.makedirs("MODELS", exist_ok=True)
+            if episode_reward > best_ep_reward:
+                best_ep_reward = episode_reward
+                torch.save(policy_net.state_dict(), "MODELS/model.pt")
+            gpu_temp = get_gpu_temp()
+            print(f"Episode {len(total_rewards):>3} | Reward: {episode_reward:>6.1f} | Epsilon: {eps_threshold:>5.3f} | Steps: {steps_done} | GPU: {gpu_temp}°C")
+            if gpu_temp >= MAX_GPU_TEMP:
+                print(f"GPU temperature {gpu_temp}°C >= {MAX_GPU_TEMP}°C limit — stopping training to cool down.")
+                break
 
     except KeyboardInterrupt:
         pass
     finally:
         env.close()
-        os.makedirs("MODELS", exist_ok=True)
-        torch.save({k: v.cpu() for k, v in model.state_dict().items()}, "MODELS/model.pt")
+        # model.pt already saved at best episodic reward — don't overwrite with final
 
         training_seconds = time.time() - start_time
         print(f"training_seconds: {training_seconds:.1f}")
