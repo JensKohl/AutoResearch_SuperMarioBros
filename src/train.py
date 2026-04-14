@@ -26,11 +26,13 @@ BUFFER_SIZE = 200000
 GAMMA = 0.99
 LR = 2.5e-4
 TARGET_UPDATE_INTERVAL = 200   # update target net every N gradient steps
-EPS_START = 1.0
-EPS_END = 0.02
-EPS_DECAY_FRAC = 0.8   # fraction of TIME_BUDGET to reach EPS_END
 TRAIN_START = 10000    # start training after this many transitions
 TRAIN_FREQ = 32        # train every N env steps (32/8 workers = every 4 per-worker steps)
+
+# Diverse epsilon per worker (ApeX-style): lower workers exploit, higher workers explore.
+# High-epsilon workers occasionally stumble past early obstacles, creating rare late-level
+# experience in the buffer that low-epsilon workers can then learn from.
+WORKER_EPSILONS = [0.01, 0.05, 0.10, 0.20, 0.30, 0.50, 0.70, 0.90]
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 warnings.filterwarnings("ignore")
@@ -220,11 +222,9 @@ def train():
 
     try:
         while time.time() - start_time < TIME_BUDGET:
-            elapsed_frac = (time.time() - start_time) / TIME_BUDGET
-            epsilon = max(EPS_END, EPS_START - elapsed_frac / EPS_DECAY_FRAC * (EPS_START - EPS_END))
-
-            # Step all workers
+            # Step all workers — each uses its own fixed epsilon
             for i in range(N_WORKERS):
+                epsilon = WORKER_EPSILONS[i]
                 if random.random() < epsilon:
                     action = random.randrange(n_actions)
                 else:
@@ -282,14 +282,14 @@ def train():
                     model_saved = True
                     os.makedirs("MODELS", exist_ok=True)
                     torch.save({k: v.cpu() for k, v in model.state_dict().items()}, "MODELS/model.pt")
-                    print(f"  Greedy checkpoint: x_dist={best_greedy_x} (saved) | eps={epsilon:.3f}")
+                    print(f"  Greedy checkpoint: x_dist={best_greedy_x} (saved)")
                 else:
-                    print(f"  Greedy check: x_dist={gx} (best={best_greedy_x}) | eps={epsilon:.3f}")
+                    print(f"  Greedy check: x_dist={gx} (best={best_greedy_x})")
 
             if total_ep_rewards and env_steps % (GREEDY_CHECK_INTERVAL // 2) == 0:
                 gpu_temp = get_gpu_temp()
                 mean_r = np.mean(total_ep_rewards[-N_WORKERS:])
-                print(f"Steps {env_steps:>7} | MeanReward: {mean_r:>7.1f} | Updates: {update_count} | Buf: {len(buffer)} | eps: {epsilon:.3f} | GPU: {gpu_temp}C")
+                print(f"Steps {env_steps:>7} | MeanReward: {mean_r:>7.1f} | Updates: {update_count} | Buf: {len(buffer)} | GPU: {gpu_temp}C")
                 if gpu_temp >= MAX_GPU_TEMP:
                     print(f"GPU {gpu_temp}C >= {MAX_GPU_TEMP}C -- stopping.")
                     break
