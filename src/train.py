@@ -115,9 +115,11 @@ class DistanceReward(gym.Wrapper):
     def __init__(self, env):
         super().__init__(env)
         self.curr_x = 0
+        self.curr_score = 0
 
     def reset(self, **kwargs):
         self.curr_x = 0
+        self.curr_score = 0
         return self.env.reset(**kwargs)
 
     def step(self, action):
@@ -126,6 +128,10 @@ class DistanceReward(gym.Wrapper):
         reward += (x_pos - self.curr_x) * 2.0
         self.curr_x = x_pos
         reward -= 0.1
+        # Score delta: reward killing enemies and collecting coins (same weight as eval metric)
+        score = info.get('score', 0)
+        reward += (score - self.curr_score) * 0.01
+        self.curr_score = score
         if info.get('flag_get', False):
             reward += 1000.0
         return obs, reward, terminated, truncated, info
