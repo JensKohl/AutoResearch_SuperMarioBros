@@ -26,7 +26,7 @@ BUFFER_SIZE = 50000
 GAMMA = 0.99
 LR = 1e-4
 TARGET_UPDATE_INTERVAL = 500   # update target net every N gradient steps (slower for stability)
-TRAIN_START = 10000    # start training after this many transitions
+TRAIN_START = 3000     # start training after 3k x>1200 transitions
 TRAIN_FREQ = 32        # train every N env steps (32/8 workers = every 4 per-worker steps)
 
 # Diverse epsilon per worker (ApeX-style): lower workers exploit, higher workers explore.
@@ -163,7 +163,7 @@ class ReplayBuffer:
     def __init__(self, capacity):
         self.buf = deque(maxlen=capacity)
 
-    def add(self, s, a, r, s2, done, x_pos=0):
+    def add(self, s, a, r, s2, done):
         self.buf.append((s, a, r, s2, done))
 
     def sample(self, n):
@@ -244,7 +244,11 @@ def train():
                 done = terminated or truncated
                 ep_reward[i] += reward
 
-                buffer.add(states[i], action, reward, next_state, float(done), x_pos=info.get('x_pos', 0))
+                # Only store late-level transitions: prevents early-level noise from
+                # overwriting warm-start knowledge for x=1200-1435
+                x_pos = info.get('x_pos', 0)
+                if x_pos > 1200:
+                    buffer.add(states[i], action, reward, next_state, float(done))
 
                 current_time = info.get('time', 0)
                 current_score = info.get('score', 0)
