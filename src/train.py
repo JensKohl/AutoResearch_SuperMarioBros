@@ -29,8 +29,8 @@ TARGET_UPDATE_INTERVAL = 200   # update target net every N gradient steps
 EPS_START = 1.0
 EPS_END = 0.02
 EPS_DECAY_FRAC = 0.8   # fraction of TIME_BUDGET to reach EPS_END
-TRAIN_START = 5000     # start training after this many transitions
-TRAIN_FREQ = 4         # train every N env steps (across all workers)
+TRAIN_START = 10000    # start training after this many transitions
+TRAIN_FREQ = 32        # train every N env steps (32/8 workers = every 4 per-worker steps)
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 warnings.filterwarnings("ignore")
