@@ -24,7 +24,7 @@ BATCH_SIZE = 128
 GAMMA = 0.99
 EPS_START = 1.0
 EPS_END = 0.02
-EPS_DECAY = 30000
+EPS_DECAY = 40000
 TARGET_UPDATE = 1000
 MEMORY_SIZE = 50000
 LR = 1e-4
@@ -141,37 +141,18 @@ class FrameSkip(gym.Wrapper):
         return obs, total_reward, terminated, truncated, info
 
 
-# --- Prioritized Replay Buffer ---
+# --- Replay Buffer ---
 class ReplayBuffer:
-    def __init__(self, capacity, alpha=0.6):
-        self.capacity = capacity
-        self.alpha = alpha
-        self.buffer = []
-        self.priorities = np.zeros(capacity, dtype=np.float32)
-        self.pos = 0
+    def __init__(self, capacity):
+        self.buffer = deque(maxlen=capacity)
 
     def push(self, state, action, reward, next_state, done):
-        max_priority = self.priorities[:len(self.buffer)].max() if self.buffer else 1.0
-        if len(self.buffer) < self.capacity:
-            self.buffer.append(None)
-        self.buffer[self.pos] = (state, action, reward, next_state, done)
-        self.priorities[self.pos] = max_priority
-        self.pos = (self.pos + 1) % self.capacity
+        self.buffer.append((state, action, reward, next_state, done))
 
-    def sample(self, batch_size, beta=0.4):
-        n = len(self.buffer)
-        probs = self.priorities[:n] ** self.alpha
-        probs /= probs.sum()
-        indices = np.random.choice(n, batch_size, p=probs, replace=False)
-        weights = (n * probs[indices]) ** (-beta)
-        weights /= weights.max()
-        batch = [self.buffer[i] for i in indices]
+    def sample(self, batch_size):
+        batch = random.sample(self.buffer, batch_size)
         states, actions, rewards, next_states, dones = zip(*batch)
-        return np.array(states), actions, rewards, np.array(next_states), dones, indices, weights
-
-    def update_priorities(self, indices, td_errors):
-        for idx, err in zip(indices, td_errors):
-            self.priorities[idx] = abs(err) + 1e-6
+        return np.array(states), actions, rewards, np.array(next_states), dones
 
     def __len__(self):
         return len(self.buffer)
@@ -234,23 +215,19 @@ def train():
                     best_time = current_time
 
                 if len(memory) > BATCH_SIZE:
-                    states, actions, rewards, next_states, dones, indices, weights = memory.sample(BATCH_SIZE)
+                    states, actions, rewards, next_states, dones = memory.sample(BATCH_SIZE)
                     states = torch.FloatTensor(states).to(device) / 255.0
                     actions = torch.LongTensor(actions).unsqueeze(1).to(device)
                     rewards = torch.FloatTensor(rewards).to(device)
                     next_states = torch.FloatTensor(next_states).to(device) / 255.0
                     dones = torch.FloatTensor(dones).to(device)
-                    weights = torch.FloatTensor(weights).to(device)
 
                     q_values = policy_net(states).gather(1, actions)
                     with torch.no_grad():
                         next_q_values = target_net(next_states).max(1)[0]
                         target_q_values = rewards + (GAMMA * next_q_values * (1 - dones))
 
-                    td_errors = (q_values.squeeze() - target_q_values).detach().cpu().numpy()
-                    memory.update_priorities(indices, td_errors)
-
-                    loss = (weights * nn.SmoothL1Loss(reduction='none')(q_values.squeeze(), target_q_values)).mean()
+                    loss = nn.SmoothL1Loss()(q_values.squeeze(), target_q_values)
                     optimizer.zero_grad()
                     loss.backward()
                     optimizer.step()
