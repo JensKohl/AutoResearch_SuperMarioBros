@@ -24,7 +24,7 @@ N_WORKERS = 8       # parallel render=False environments — 8x data collection 
 BATCH_SIZE = 256
 BUFFER_SIZE = 200000
 GAMMA = 0.99
-LR = 2.5e-4
+LR = 1e-4  # Lower LR to preserve warm-start gains while learning new territory
 TARGET_UPDATE_INTERVAL = 200   # update target net every N gradient steps
 TRAIN_START = 10000    # start training after this many transitions
 TRAIN_FREQ = 32        # train every N env steps (32/8 workers = every 4 per-worker steps)
@@ -32,7 +32,7 @@ TRAIN_FREQ = 32        # train every N env steps (32/8 workers = every 4 per-wor
 # Diverse epsilon per worker (ApeX-style): lower workers exploit, higher workers explore.
 # High-epsilon workers occasionally stumble past early obstacles, creating rare late-level
 # experience in the buffer that low-epsilon workers can then learn from.
-WORKER_EPSILONS = [0.01, 0.05, 0.10, 0.20, 0.30, 0.50, 0.70, 0.90]
+WORKER_EPSILONS = [0.05, 0.15, 0.25, 0.35, 0.50, 0.65, 0.80, 0.95]
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 warnings.filterwarnings("ignore")
@@ -115,11 +115,9 @@ class DistanceReward(gym.Wrapper):
     def __init__(self, env):
         super().__init__(env)
         self.curr_x = 0
-        self.curr_score = 0
 
     def reset(self, **kwargs):
         self.curr_x = 0
-        self.curr_score = 0
         return self.env.reset(**kwargs)
 
     def step(self, action):
@@ -128,10 +126,6 @@ class DistanceReward(gym.Wrapper):
         reward += (x_pos - self.curr_x) * 2.0
         self.curr_x = x_pos
         reward -= 0.1
-        # Score delta: reward killing enemies and collecting coins (same weight as eval metric)
-        score = info.get('score', 0)
-        reward += (score - self.curr_score) * 0.01
-        self.curr_score = score
         if info.get('flag_get', False):
             reward += 1000.0
         return obs, reward, terminated, truncated, info
