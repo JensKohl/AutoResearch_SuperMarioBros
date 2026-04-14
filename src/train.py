@@ -24,7 +24,7 @@ BATCH_SIZE = 128
 GAMMA = 0.99
 EPS_START = 1.0
 EPS_END = 0.02
-EPS_DECAY = 40000
+EPS_DECAY = 30000
 TARGET_UPDATE = 1000
 MEMORY_SIZE = 50000
 LR = 1e-4
@@ -190,7 +190,8 @@ def train():
             episode_reward = 0
 
             for t in range(MAX_EPISODE_STEPS):
-                eps_threshold = EPS_END + (EPS_START - EPS_END) * np.exp(-1. * steps_done / EPS_DECAY)
+                elapsed_frac = (time.time() - start_time) / TIME_BUDGET
+                eps_threshold = EPS_END + (EPS_START - EPS_END) * max(0.0, 1.0 - elapsed_frac / 0.8)
                 if random.random() > eps_threshold:
                     with torch.no_grad():
                         state_tensor = torch.FloatTensor(state).unsqueeze(0).to(device) / 255.0
