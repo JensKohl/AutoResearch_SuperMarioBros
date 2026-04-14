@@ -21,12 +21,12 @@ from src.model import PolicyModel
 
 # Hyperparameters
 BATCH_SIZE = 128
-GAMMA = 0.95
+GAMMA = 0.99
 EPS_START = 1.0
 EPS_END = 0.02
 EPS_DECAY = 30000
 TARGET_UPDATE = 1000
-MEMORY_SIZE = 50000
+MEMORY_SIZE = 100000
 LR = 1e-4
 RENDER = True
 
