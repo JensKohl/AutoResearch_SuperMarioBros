@@ -29,7 +29,7 @@ TARGET_UPDATE = 1000
 MEMORY_SIZE = 50000
 LR = 1e-4
 RENDER = True
-WARM_START = False  # Set True to load MODELS/model.pt; False for fresh start
+WARM_START = True  # Set True to load MODELS/model.pt; False for fresh start
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 warnings.filterwarnings("ignore")
