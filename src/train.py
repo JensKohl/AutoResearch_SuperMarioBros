@@ -28,7 +28,7 @@ EPS_DECAY = 30000
 TARGET_UPDATE = 1000
 MEMORY_SIZE = 50000
 LR = 1e-4
-RENDER = False
+RENDER = True
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 warnings.filterwarnings("ignore")
@@ -118,8 +118,9 @@ class DistanceReward(gym.Wrapper):
         x_pos = info.get('x_pos', 0)
         reward += (x_pos - self.curr_x) * 2.0
         self.curr_x = x_pos
+        reward -= 0.1
         if info.get('flag_get', False):
-            reward += 10000.0  # Dominant signal: finishing the level is everything
+            reward += 1000.0
         return obs, reward, terminated, truncated, info
 
 
@@ -225,7 +226,9 @@ def train():
 
                     q_values = policy_net(states).gather(1, actions)
                     with torch.no_grad():
-                        next_q_values = target_net(next_states).max(1)[0]
+                        # Double DQN: policy net selects action, target net evaluates it
+                        next_actions = policy_net(next_states).max(1)[1].unsqueeze(1)
+                        next_q_values = target_net(next_states).gather(1, next_actions).squeeze(1)
                         target_q_values = rewards + (GAMMA * next_q_values * (1 - dones))
 
                     loss = nn.SmoothL1Loss()(q_values.squeeze(), target_q_values)
