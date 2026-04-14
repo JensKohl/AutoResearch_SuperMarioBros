@@ -21,7 +21,7 @@ from src.model import PolicyModel
 
 # Hyperparameters
 BATCH_SIZE = 128
-GAMMA = 0.99
+GAMMA = 0.95
 EPS_START = 1.0
 EPS_END = 0.02
 EPS_DECAY = 30000
