@@ -200,7 +200,7 @@ def train():
                     pg['lr'] = LR * (1.0 / 3.0)
                 memory = ReplayBuffer(MEMORY_SIZE)
                 learn_start = BATCH_SIZE
-                print(f"Phase 2: LR → {LR/3:.2e}, buffer cleared")
+                print(f"Phase 2: LR -> {LR/3:.2e}, buffer cleared")
 
             for t in range(MAX_EPISODE_STEPS):
                 elapsed_frac = (time.time() - start_time) / TIME_BUDGET
