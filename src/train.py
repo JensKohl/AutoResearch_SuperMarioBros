@@ -202,9 +202,15 @@ def train():
     n_actions = envs[0].action_space.n
     model = PolicyModel(n_actions).to(device)
     target = PolicyModel(n_actions).to(device)
+    optimizer = optim.Adam(model.parameters(), lr=LR)
+
+    # Warm start: load prior checkpoint if available
+    model_path = "MODELS/model.pt"
+    if os.path.exists(model_path):
+        model.load_state_dict(torch.load(model_path, map_location=device))
+        print(f"Warm start from {model_path}")
     target.load_state_dict(model.state_dict())
     target.eval()
-    optimizer = optim.Adam(model.parameters(), lr=LR)
 
     buffer = ReplayBuffer(BUFFER_SIZE)
     start_time = time.time()
