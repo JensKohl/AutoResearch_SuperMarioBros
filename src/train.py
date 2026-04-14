@@ -29,7 +29,6 @@ TARGET_UPDATE = 1000
 MEMORY_SIZE = 50000
 LR = 1e-4
 RENDER = True
-WARM_START = False  # Set True to load MODELS/model.pt; False for fresh start
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 warnings.filterwarnings("ignore")
@@ -142,25 +141,16 @@ class FrameSkip(gym.Wrapper):
         return obs, total_reward, terminated, truncated, info
 
 
-# --- Replay Buffer with high-x oversampling ---
+# --- Replay Buffer ---
 class ReplayBuffer:
-    """50% of each batch sampled from x_pos > X_BIAS_THRESHOLD when available."""
-    X_BIAS_THRESHOLD = 1200
-
     def __init__(self, capacity):
         self.buffer = deque(maxlen=capacity)
-        self.hard_buffer = deque(maxlen=capacity // 4)  # hard-zone transitions
 
-    def push(self, state, action, reward, next_state, done, x_pos=0):
+    def push(self, state, action, reward, next_state, done):
         self.buffer.append((state, action, reward, next_state, done))
-        if x_pos > self.X_BIAS_THRESHOLD:
-            self.hard_buffer.append((state, action, reward, next_state, done))
 
     def sample(self, batch_size):
-        n_hard = batch_size // 2 if len(self.hard_buffer) >= batch_size // 2 else 0
-        hard_batch = random.sample(list(self.hard_buffer), n_hard) if n_hard else []
-        main_batch = random.sample(list(self.buffer), batch_size - n_hard)
-        batch = hard_batch + main_batch
+        batch = random.sample(self.buffer, batch_size)
         states, actions, rewards, next_states, dones = zip(*batch)
         return np.array(states), actions, rewards, np.array(next_states), dones
 
@@ -202,7 +192,8 @@ def train():
 
             for t in range(MAX_EPISODE_STEPS):
                 elapsed_frac = (time.time() - start_time) / TIME_BUDGET
-                eps_threshold = EPS_END + (EPS_START - EPS_END) * max(0.0, 1.0 - elapsed_frac / 0.8)
+                # Faster decay: reach EPS_END at 50% of budget (vs 80%), giving 50% pure exploitation
+                eps_threshold = EPS_END + (EPS_START - EPS_END) * max(0.0, 1.0 - elapsed_frac / 0.5)
                 if random.random() > eps_threshold:
                     with torch.no_grad():
                         state_tensor = torch.FloatTensor(state).unsqueeze(0).to(device) / 255.0
@@ -215,8 +206,7 @@ def train():
                 done = terminated or truncated
                 episode_reward += reward
 
-                x_pos = info.get('x_pos', 0)
-                memory.push(state, action, reward, next_state, done, x_pos)
+                memory.push(state, action, reward, next_state, done)
                 state = next_state
 
                 current_time = info.get('time', 0)
@@ -263,7 +253,7 @@ def train():
     finally:
         env.close()
         os.makedirs("MODELS", exist_ok=True)
-        torch.save(target_net.state_dict(), "MODELS/model.pt")  # target_net: time-avg stable policy
+        torch.save(policy_net.state_dict(), "MODELS/model.pt")
 
         training_seconds = time.time() - start_time
         print(f"training_seconds: {training_seconds:.1f}")
