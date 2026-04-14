@@ -24,14 +24,14 @@ N_WORKERS = 8
 BATCH_SIZE = 256
 BUFFER_SIZE = 200000
 GAMMA = 0.99
-LR = 3e-5  # Slightly higher: faster convergence while still preserving warm-start
+LR = 1e-4
 TARGET_UPDATE_INTERVAL = 200
-TRAIN_START = 10000
+TRAIN_START = 3000     # smaller: only x>1200 transitions so buffer fills slowly
 TRAIN_FREQ = 32
 GREEDY_CHECK_INTERVAL = 5000
 
 # ApeX-style diverse epsilon per worker
-WORKER_EPSILONS = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.15]  # 7 greedy + 1 exploratory
+WORKER_EPSILONS = [0.0, 0.0, 0.0, 0.0, 0.30, 0.50, 0.70, 0.90]  # 4 greedy + 4 exploratory
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 warnings.filterwarnings("ignore")
@@ -240,7 +240,8 @@ def train():
                 next_state, reward, terminated, truncated, info = envs[i].step(action)
                 done = terminated or truncated
                 ep_reward[i] += reward
-                buffer.add(states[i], action, reward, next_state, float(done))
+                if info.get('x_pos', 0) > 1200:   # only train on late-level transitions
+                    buffer.add(states[i], action, reward, next_state, float(done))
 
                 current_time = info.get('time', 0)
                 current_score = info.get('score', 0)
