@@ -25,7 +25,7 @@ N_STEPS = 128       # steps per worker per rollout
 CLIP_EPS = 0.2
 K_EPOCHS = 4
 MINI_BATCH = 256    # mini-batch size (out of N_WORKERS*N_STEPS=1024 per rollout)
-ENTROPY_COEF = 0.01
+ENTROPY_COEF = 0.001  # Low entropy: push policy toward determinism for greedy eval
 VALUE_COEF = 0.5
 GAE_LAMBDA = 0.95
 GAMMA = 0.99
@@ -166,9 +166,28 @@ def compute_gae(rewards, values, dones, next_value):
     return advantages, returns
 
 
+GREEDY_CHECK_INTERVAL = 15  # run greedy eval every N rollouts to checkpoint best model
+
+
+def greedy_eval_x(model, eval_env):
+    """Run one greedy (argmax) episode; return max x_pos reached."""
+    state, info = eval_env.reset()
+    max_x = 0
+    for _ in range(MAX_EPISODE_STEPS):
+        st = torch.FloatTensor(state).unsqueeze(0).to(device) / 255.0
+        with torch.no_grad():
+            action = model(st).max(1)[1].item()
+        state, _, terminated, truncated, info = eval_env.step(action)
+        max_x = max(max_x, info.get('x_pos', 0))
+        if terminated or truncated:
+            break
+    return max_x
+
+
 def train():
     # Create N_WORKERS render=False environments
     envs = [wrap_env(make_env(render=False)) for _ in range(N_WORKERS)]
+    eval_env = wrap_env(make_env(render=False))  # greedy checkpoint env
     states = [env.reset()[0] for env in envs]
 
     n_actions = envs[0].action_space.n
@@ -178,6 +197,8 @@ def train():
     start_time = time.time()
     total_ep_rewards = []
     update_count = 0
+    best_greedy_x = 0
+    model_saved = False
 
     best_total_reward = -float('inf')
     best_score = 0
@@ -284,12 +305,25 @@ def train():
                     optimizer.step()
 
             update_count += 1
+
+            # Greedy checkpoint: periodically run deterministic episode, save if best
+            if update_count % GREEDY_CHECK_INTERVAL == 0:
+                gx = greedy_eval_x(model, eval_env)
+                if gx > best_greedy_x:
+                    best_greedy_x = gx
+                    model_saved = True
+                    os.makedirs("MODELS", exist_ok=True)
+                    torch.save({k: v.cpu() for k, v in model.state_dict().items()}, "MODELS/model.pt")
+                    print(f"  Greedy checkpoint: x_dist={best_greedy_x} (saved)")
+                else:
+                    print(f"  Greedy check: x_dist={gx} (best={best_greedy_x})")
+
             if total_ep_rewards:
                 gpu_temp = get_gpu_temp()
                 mean_r = np.mean(total_ep_rewards[-N_WORKERS:])
                 print(f"Update {update_count:>4} | MeanReward: {mean_r:>7.1f} | Episodes: {len(total_ep_rewards)} | GPU: {gpu_temp}C")
                 if gpu_temp >= MAX_GPU_TEMP:
-                    print(f"GPU {gpu_temp}C >= {MAX_GPU_TEMP}C — stopping.")
+                    print(f"GPU {gpu_temp}C >= {MAX_GPU_TEMP}C -- stopping.")
                     break
 
     except KeyboardInterrupt:
@@ -297,8 +331,11 @@ def train():
     finally:
         for env in envs:
             env.close()
+        eval_env.close()
         os.makedirs("MODELS", exist_ok=True)
-        torch.save({k: v.cpu() for k, v in model.state_dict().items()}, "MODELS/model.pt")
+        if not model_saved:
+            # No greedy checkpoint was saved yet — save final model
+            torch.save({k: v.cpu() for k, v in model.state_dict().items()}, "MODELS/model.pt")
 
         training_seconds = time.time() - start_time
         print(f"training_seconds: {training_seconds:.1f}")
