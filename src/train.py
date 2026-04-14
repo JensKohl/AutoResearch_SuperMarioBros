@@ -19,21 +19,23 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from src.constants import TIME_BUDGET, MAX_EPISODE_STEPS, PRO_MOVEMENT
 from src.model import PolicyModel
 
-# Hyperparameters
-BATCH_SIZE = 128
+# PPO hyperparameters
+N_WORKERS = 8       # parallel render=False environments
+N_STEPS = 128       # steps per worker per rollout
+CLIP_EPS = 0.2
+K_EPOCHS = 4
+MINI_BATCH = 256    # mini-batch size (out of N_WORKERS*N_STEPS=1024 per rollout)
+ENTROPY_COEF = 0.01
+VALUE_COEF = 0.5
+GAE_LAMBDA = 0.95
 GAMMA = 0.99
-EPS_START = 1.0
-EPS_END = 0.02
-EPS_DECAY = 30000
-TARGET_UPDATE = 1000
-MEMORY_SIZE = 50000
-LR = 1e-4
-RENDER = True
+LR = 2.5e-4
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 warnings.filterwarnings("ignore")
 
-MAX_GPU_TEMP = 85  # °C — stop training gracefully if exceeded
+MAX_GPU_TEMP = 85
+
 
 def get_gpu_temp():
     try:
@@ -48,7 +50,7 @@ def get_gpu_temp():
 
 def make_env(render=False):
     env = gym_super_mario_bros.make('SuperMarioBros-v0')
-    env = env.env  # unwrap gym 0.26 TimeLimit which expects 5-tuple but base env returns 4-tuple
+    env = env.env
     env = JoypadSpace(env, PRO_MOVEMENT)
     env = shimmy.GymV21CompatibilityV0(env=env, render_mode='human' if render else None)
     return env
@@ -109,6 +111,7 @@ class DistanceReward(gym.Wrapper):
     def __init__(self, env):
         super().__init__(env)
         self.curr_x = 0
+
     def reset(self, **kwargs):
         self.curr_x = 0
         return self.env.reset(**kwargs)
@@ -141,45 +144,40 @@ class FrameSkip(gym.Wrapper):
         return obs, total_reward, terminated, truncated, info
 
 
-# --- Replay Buffer ---
-class ReplayBuffer:
-    def __init__(self, capacity):
-        self.buffer = deque(maxlen=capacity)
-
-    def push(self, state, action, reward, next_state, done):
-        self.buffer.append((state, action, reward, next_state, done))
-
-    def sample(self, batch_size):
-        batch = random.sample(self.buffer, batch_size)
-        states, actions, rewards, next_states, dones = zip(*batch)
-        return np.array(states), actions, rewards, np.array(next_states), dones
-
-    def __len__(self):
-        return len(self.buffer)
-
-
-# --- Training Loop ---
-def train():
-    env = make_env(render=RENDER)
-    env = FrameSkip(env, skip=3)
+def wrap_env(raw_env):
+    env = FrameSkip(raw_env, skip=3)
     env = DistanceReward(env)
     env = PreprocessFrame(env)
     env = EnsureChannelFirst(env)
     env = FrameStack(env, k=4)
+    return env
 
-    n_actions = env.action_space.n
-    policy_net = PolicyModel(n_actions).to(device)
-    target_net = PolicyModel(n_actions).to(device)
-    target_net.load_state_dict(policy_net.state_dict())
-    target_net.eval()
 
-    optimizer = optim.RMSprop(policy_net.parameters(), lr=LR, alpha=0.95, eps=0.01, momentum=0.95)
-    memory = ReplayBuffer(MEMORY_SIZE)
-    steps_done = 0
-    learn_start = BATCH_SIZE
+def compute_gae(rewards, values, dones, next_value):
+    """Compute GAE advantages and returns for one worker's trajectory."""
+    advantages = []
+    gae = 0.0
+    for t in reversed(range(len(rewards))):
+        nv = next_value if t == len(rewards) - 1 else values[t + 1]
+        delta = rewards[t] + GAMMA * nv * (1 - dones[t]) - values[t]
+        gae = delta + GAMMA * GAE_LAMBDA * (1 - dones[t]) * gae
+        advantages.insert(0, gae)
+    returns = [a + v for a, v in zip(advantages, values)]
+    return advantages, returns
+
+
+def train():
+    # Create N_WORKERS render=False environments
+    envs = [wrap_env(make_env(render=False)) for _ in range(N_WORKERS)]
+    states = [env.reset()[0] for env in envs]
+
+    n_actions = envs[0].action_space.n
+    model = PolicyModel(n_actions).to(device)
+    optimizer = optim.Adam(model.parameters(), lr=LR)
 
     start_time = time.time()
-    total_rewards = []
+    total_ep_rewards = []
+    update_count = 0
 
     best_total_reward = -float('inf')
     best_score = 0
@@ -187,73 +185,120 @@ def train():
 
     try:
         while time.time() - start_time < TIME_BUDGET:
-            state, info = env.reset()
-            episode_reward = 0
+            # ---- Collect rollout from all workers ----
+            # Per-worker buffers
+            w_states  = [[] for _ in range(N_WORKERS)]
+            w_actions = [[] for _ in range(N_WORKERS)]
+            w_lp      = [[] for _ in range(N_WORKERS)]
+            w_values  = [[] for _ in range(N_WORKERS)]
+            w_rewards = [[] for _ in range(N_WORKERS)]
+            w_dones   = [[] for _ in range(N_WORKERS)]
+            w_ep_r    = [0.0] * N_WORKERS
 
-            for t in range(MAX_EPISODE_STEPS):
-                elapsed_frac = (time.time() - start_time) / TIME_BUDGET
-                # Faster decay: reach EPS_END at 50% of budget (vs 80%), giving 50% pure exploitation
-                eps_threshold = EPS_END + (EPS_START - EPS_END) * max(0.0, 1.0 - elapsed_frac / 0.5)
-                if random.random() > eps_threshold:
+            for step in range(N_STEPS):
+                if time.time() - start_time >= TIME_BUDGET:
+                    break
+                for i in range(N_WORKERS):
+                    st = torch.FloatTensor(states[i]).unsqueeze(0).to(device) / 255.0
                     with torch.no_grad():
-                        state_tensor = torch.FloatTensor(state).unsqueeze(0).to(device) / 255.0
-                        action = policy_net(state_tensor).max(1)[1].view(1, 1).item()
-                else:
-                    action = env.action_space.sample()
-                steps_done += 1
+                        action, lp, value = model.act(st)
 
-                next_state, reward, terminated, truncated, info = env.step(action)
-                done = terminated or truncated
-                episode_reward += reward
+                    next_state, reward, terminated, truncated, info = envs[i].step(action.item())
+                    done = terminated or truncated
+                    w_ep_r[i] += reward
 
-                memory.push(state, action, reward, next_state, done)
-                state = next_state
+                    w_states[i].append(states[i])
+                    w_actions[i].append(action.item())
+                    w_lp[i].append(lp.item())
+                    w_values[i].append(value.item())
+                    w_rewards[i].append(reward)
+                    w_dones[i].append(float(done))
 
-                current_time = info.get('time', 0)
-                current_score = info.get('score', 0)
-                current_total = current_time + current_score
-                if current_total > best_total_reward:
-                    best_total_reward = current_total
-                    best_score = current_score
-                    best_time = current_time
+                    current_time = info.get('time', 0)
+                    current_score = info.get('score', 0)
+                    ct = current_time + current_score
+                    if ct > best_total_reward:
+                        best_total_reward = ct
+                        best_score = current_score
+                        best_time = current_time
 
-                if len(memory) > learn_start:
-                    states, actions, rewards, next_states, dones = memory.sample(BATCH_SIZE)
-                    states = torch.FloatTensor(states).to(device) / 255.0
-                    actions = torch.LongTensor(actions).unsqueeze(1).to(device)
-                    rewards = torch.FloatTensor(rewards).to(device)
-                    next_states = torch.FloatTensor(next_states).to(device) / 255.0
-                    dones = torch.FloatTensor(dones).to(device)
+                    if done:
+                        total_ep_rewards.append(w_ep_r[i])
+                        w_ep_r[i] = 0.0
+                        states[i] = envs[i].reset()[0]
+                    else:
+                        states[i] = next_state
 
-                    q_values = policy_net(states).gather(1, actions)
-                    with torch.no_grad():
-                        next_q_values = target_net(next_states).max(1)[0]
-                        target_q_values = rewards + (GAMMA * next_q_values * (1 - dones))
+            if time.time() - start_time >= TIME_BUDGET:
+                break
 
-                    loss = nn.SmoothL1Loss()(q_values.squeeze(), target_q_values)
+            # ---- Compute advantages for each worker ----
+            all_states, all_actions, all_old_lp, all_adv, all_ret = [], [], [], [], []
+            for i in range(N_WORKERS):
+                if not w_rewards[i]:
+                    continue
+                nst = torch.FloatTensor(states[i]).unsqueeze(0).to(device) / 255.0
+                with torch.no_grad():
+                    _, _, nv = model.act(nst)
+                    next_val = nv.item() * (1 - w_dones[i][-1])
+                adv, ret = compute_gae(w_rewards[i], w_values[i], w_dones[i], next_val)
+                all_states.extend(w_states[i])
+                all_actions.extend(w_actions[i])
+                all_old_lp.extend(w_lp[i])
+                all_adv.extend(adv)
+                all_ret.extend(ret)
+
+            if not all_states:
+                continue
+
+            N_total = len(all_states)
+            states_t   = torch.FloatTensor(np.array(all_states)).to(device) / 255.0
+            actions_t  = torch.LongTensor(all_actions).to(device)
+            old_lp_t   = torch.FloatTensor(all_old_lp).to(device)
+            adv_t      = torch.FloatTensor(all_adv).to(device)
+            ret_t      = torch.FloatTensor(all_ret).to(device)
+
+            adv_t = (adv_t - adv_t.mean()) / (adv_t.std() + 1e-8)
+            ret_t = (ret_t - ret_t.mean()) / (ret_t.std() + 1e-8)
+
+            # ---- PPO update ----
+            indices = np.arange(N_total)
+            for _ in range(K_EPOCHS):
+                np.random.shuffle(indices)
+                for start in range(0, N_total, MINI_BATCH):
+                    mb = indices[start:start + MINI_BATCH]
+                    lp, vals, entropy = model.evaluate(states_t[mb], actions_t[mb])
+                    ratio = torch.exp(lp - old_lp_t[mb])
+                    a = adv_t[mb]
+                    surr = torch.min(ratio * a,
+                                     torch.clamp(ratio, 1 - CLIP_EPS, 1 + CLIP_EPS) * a)
+                    actor_loss  = -surr.mean()
+                    critic_loss = nn.MSELoss()(vals, ret_t[mb])
+                    loss = actor_loss + VALUE_COEF * critic_loss - ENTROPY_COEF * entropy.mean()
+
+                    if torch.isnan(loss):
+                        continue
                     optimizer.zero_grad()
                     loss.backward()
+                    nn.utils.clip_grad_norm_(model.parameters(), 0.5)
                     optimizer.step()
 
-                if steps_done % TARGET_UPDATE == 0:
-                    target_net.load_state_dict(policy_net.state_dict())
-
-                if done or (time.time() - start_time >= TIME_BUDGET):
+            update_count += 1
+            if total_ep_rewards:
+                gpu_temp = get_gpu_temp()
+                mean_r = np.mean(total_ep_rewards[-N_WORKERS:])
+                print(f"Update {update_count:>4} | MeanReward: {mean_r:>7.1f} | Episodes: {len(total_ep_rewards)} | GPU: {gpu_temp}C")
+                if gpu_temp >= MAX_GPU_TEMP:
+                    print(f"GPU {gpu_temp}C >= {MAX_GPU_TEMP}C — stopping.")
                     break
-
-            total_rewards.append(episode_reward)
-            gpu_temp = get_gpu_temp()
-            print(f"Episode {len(total_rewards):>3} | Reward: {episode_reward:>6.1f} | Epsilon: {eps_threshold:>5.3f} | Steps: {steps_done} | GPU: {gpu_temp}°C")
-            if gpu_temp >= MAX_GPU_TEMP:
-                print(f"GPU temperature {gpu_temp}°C >= {MAX_GPU_TEMP}°C limit — stopping training to cool down.")
-                break
 
     except KeyboardInterrupt:
         pass
     finally:
-        env.close()
+        for env in envs:
+            env.close()
         os.makedirs("MODELS", exist_ok=True)
-        torch.save(policy_net.state_dict(), "MODELS/model.pt")
+        torch.save({k: v.cpu() for k, v in model.state_dict().items()}, "MODELS/model.pt")
 
         training_seconds = time.time() - start_time
         print(f"training_seconds: {training_seconds:.1f}")
@@ -265,8 +310,8 @@ def train():
         print(f"train_seconds_to_finish: {seconds_to_finish:.1f}")
         print(f"train_best_score: {best_score}")
 
-        if len(total_rewards):
-            print(f"mean_episode_reward: {np.mean(total_rewards):.1f}")
+        if total_ep_rewards:
+            print(f"mean_episode_reward: {np.mean(total_ep_rewards):.1f}")
 
 
 if __name__ == "__main__":
