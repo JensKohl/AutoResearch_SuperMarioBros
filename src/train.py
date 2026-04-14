@@ -21,12 +21,12 @@ from src.model import PolicyModel
 
 # Hyperparameters
 BATCH_SIZE = 128
-GAMMA = 0.995
+GAMMA = 0.99
 EPS_START = 1.0
 EPS_END = 0.02
 EPS_DECAY = 30000
 TARGET_UPDATE = 1000
-MEMORY_SIZE = 50000
+MEMORY_SIZE = 200000
 LR = 1e-4
 RENDER = True
 
@@ -114,13 +114,16 @@ class DistanceReward(gym.Wrapper):
         return self.env.reset(**kwargs)
 
     def step(self, action):
-        obs, reward, terminated, truncated, info = self.env.step(action)
+        obs, _, terminated, truncated, info = self.env.step(action)
         x_pos = info.get('x_pos', 0)
-        reward += (x_pos - self.curr_x) * 2.0
+        x_delta = x_pos - self.curr_x
+        # Scale reward higher in the later (harder) parts of the level
+        # x_pos=0→800 gives multiplier 2x, x_pos=1800 gives 4x, x_pos=2800 gives 6x
+        pos_scale = 2.0 * (1.0 + max(0.0, x_pos - 800) / 1000.0)
+        reward = x_delta * pos_scale
         self.curr_x = x_pos
-        reward -= 0.1
         if info.get('flag_get', False):
-            reward += 1000.0
+            reward += 10000.0  # match eval metric scale: finishing the level is everything
         return obs, reward, terminated, truncated, info
 
 
