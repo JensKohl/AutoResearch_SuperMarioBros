@@ -20,7 +20,7 @@ from src.constants import TIME_BUDGET, MAX_EPISODE_STEPS, PRO_MOVEMENT
 from src.model import PolicyModel
 
 # Hyperparameters
-BATCH_SIZE = 256
+BATCH_SIZE = 128
 GAMMA = 0.99
 EPS_START = 1.0
 EPS_END = 0.02
@@ -173,7 +173,7 @@ def train():
     target_net.load_state_dict(policy_net.state_dict())
     target_net.eval()
 
-    optimizer = optim.Adam(policy_net.parameters(), lr=LR)
+    optimizer = optim.RMSprop(policy_net.parameters(), lr=LR, alpha=0.95, eps=0.01, momentum=0.95)
     memory = ReplayBuffer(MEMORY_SIZE)
     steps_done = 0
 
