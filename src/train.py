@@ -169,13 +169,22 @@ def train():
 
     n_actions = env.action_space.n
     policy_net = PolicyModel(n_actions).to(device)
+    model_path = "MODELS/model.pt"
+    warm_start = os.path.exists(model_path)
+    if warm_start:
+        policy_net.load_state_dict(torch.load(model_path, map_location=device))
+        print(f"Warm start: loaded model from {model_path}")
     target_net = PolicyModel(n_actions).to(device)
     target_net.load_state_dict(policy_net.state_dict())
     target_net.eval()
 
-    optimizer = optim.RMSprop(policy_net.parameters(), lr=LR, alpha=0.95, eps=0.01, momentum=0.95)
+    # Use smaller LR and fill buffer before learning when warm-starting
+    fine_tune_lr = LR * 0.5 if warm_start else LR
+    optimizer = optim.RMSprop(policy_net.parameters(), lr=fine_tune_lr, alpha=0.95, eps=0.01, momentum=0.95)
     memory = ReplayBuffer(MEMORY_SIZE)
     steps_done = 0
+    # Delay learning start when warm-starting to avoid corrupting weights before buffer has diverse data
+    learn_start = 2000 if warm_start else BATCH_SIZE
 
     start_time = time.time()
     total_rewards = []
@@ -190,8 +199,9 @@ def train():
             episode_reward = 0
 
             for t in range(MAX_EPISODE_STEPS):
+                eps_start = 0.3 if warm_start else EPS_START
                 elapsed_frac = (time.time() - start_time) / TIME_BUDGET
-                eps_threshold = EPS_END + (EPS_START - EPS_END) * max(0.0, 1.0 - elapsed_frac / 0.8)
+                eps_threshold = EPS_END + (eps_start - EPS_END) * max(0.0, 1.0 - elapsed_frac / 0.8)
                 if random.random() > eps_threshold:
                     with torch.no_grad():
                         state_tensor = torch.FloatTensor(state).unsqueeze(0).to(device) / 255.0
@@ -215,7 +225,7 @@ def train():
                     best_score = current_score
                     best_time = current_time
 
-                if len(memory) > BATCH_SIZE:
+                if len(memory) > learn_start:
                     states, actions, rewards, next_states, dones = memory.sample(BATCH_SIZE)
                     states = torch.FloatTensor(states).to(device) / 255.0
                     actions = torch.LongTensor(actions).unsqueeze(1).to(device)
