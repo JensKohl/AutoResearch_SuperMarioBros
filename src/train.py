@@ -240,8 +240,9 @@ def train():
             advantages_t = torch.FloatTensor(advantages).to(device)
             returns_t = torch.FloatTensor(returns).to(device)
 
-            # Normalize advantages
+            # Normalize advantages and returns for stability
             advantages_t = (advantages_t - advantages_t.mean()) / (advantages_t.std() + 1e-8)
+            returns_t = (returns_t - returns_t.mean()) / (returns_t.std() + 1e-8)
 
             # --- PPO update ---
             indices = np.arange(N_STEPS)
@@ -266,6 +267,8 @@ def train():
 
                     loss = actor_loss + VALUE_COEF * critic_loss + ENTROPY_COEF * entropy_loss
 
+                    if torch.isnan(loss):
+                        continue
                     optimizer.zero_grad()
                     loss.backward()
                     nn.utils.clip_grad_norm_(model.parameters(), 0.5)
@@ -278,7 +281,7 @@ def train():
     finally:
         env.close()
         os.makedirs("MODELS", exist_ok=True)
-        torch.save(model.state_dict(), "MODELS/model.pt")
+        torch.save({k: v.cpu() for k, v in model.state_dict().items()}, "MODELS/model.pt")
 
         training_seconds = time.time() - start_time
         print(f"training_seconds: {training_seconds:.1f}")
