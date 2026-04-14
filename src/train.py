@@ -109,22 +109,14 @@ class DistanceReward(gym.Wrapper):
     def __init__(self, env):
         super().__init__(env)
         self.curr_x = 0
-        self.max_x = 0
-
     def reset(self, **kwargs):
         self.curr_x = 0
-        self.max_x = 0
         return self.env.reset(**kwargs)
 
     def step(self, action):
         obs, reward, terminated, truncated, info = self.env.step(action)
         x_pos = info.get('x_pos', 0)
-        delta = x_pos - self.curr_x
-        reward += delta * 2.0
-        # Extra bonus for reaching new territory
-        if x_pos > self.max_x:
-            reward += (x_pos - self.max_x) * 3.0
-            self.max_x = x_pos
+        reward += (x_pos - self.curr_x) * 2.0
         self.curr_x = x_pos
         reward -= 0.1
         if info.get('flag_get', False):
@@ -149,18 +141,37 @@ class FrameSkip(gym.Wrapper):
         return obs, total_reward, terminated, truncated, info
 
 
-# --- Replay Buffer ---
+# --- Prioritized Replay Buffer ---
 class ReplayBuffer:
-    def __init__(self, capacity):
-        self.buffer = deque(maxlen=capacity)
+    def __init__(self, capacity, alpha=0.6):
+        self.capacity = capacity
+        self.alpha = alpha
+        self.buffer = []
+        self.priorities = np.zeros(capacity, dtype=np.float32)
+        self.pos = 0
 
     def push(self, state, action, reward, next_state, done):
-        self.buffer.append((state, action, reward, next_state, done))
+        max_priority = self.priorities[:len(self.buffer)].max() if self.buffer else 1.0
+        if len(self.buffer) < self.capacity:
+            self.buffer.append(None)
+        self.buffer[self.pos] = (state, action, reward, next_state, done)
+        self.priorities[self.pos] = max_priority
+        self.pos = (self.pos + 1) % self.capacity
 
-    def sample(self, batch_size):
-        batch = random.sample(self.buffer, batch_size)
+    def sample(self, batch_size, beta=0.4):
+        n = len(self.buffer)
+        probs = self.priorities[:n] ** self.alpha
+        probs /= probs.sum()
+        indices = np.random.choice(n, batch_size, p=probs, replace=False)
+        weights = (n * probs[indices]) ** (-beta)
+        weights /= weights.max()
+        batch = [self.buffer[i] for i in indices]
         states, actions, rewards, next_states, dones = zip(*batch)
-        return np.array(states), actions, rewards, np.array(next_states), dones
+        return np.array(states), actions, rewards, np.array(next_states), dones, indices, weights
+
+    def update_priorities(self, indices, td_errors):
+        for idx, err in zip(indices, td_errors):
+            self.priorities[idx] = abs(err) + 1e-6
 
     def __len__(self):
         return len(self.buffer)
@@ -223,19 +234,23 @@ def train():
                     best_time = current_time
 
                 if len(memory) > BATCH_SIZE:
-                    states, actions, rewards, next_states, dones = memory.sample(BATCH_SIZE)
+                    states, actions, rewards, next_states, dones, indices, weights = memory.sample(BATCH_SIZE)
                     states = torch.FloatTensor(states).to(device) / 255.0
                     actions = torch.LongTensor(actions).unsqueeze(1).to(device)
                     rewards = torch.FloatTensor(rewards).to(device)
                     next_states = torch.FloatTensor(next_states).to(device) / 255.0
                     dones = torch.FloatTensor(dones).to(device)
+                    weights = torch.FloatTensor(weights).to(device)
 
                     q_values = policy_net(states).gather(1, actions)
                     with torch.no_grad():
                         next_q_values = target_net(next_states).max(1)[0]
                         target_q_values = rewards + (GAMMA * next_q_values * (1 - dones))
 
-                    loss = nn.SmoothL1Loss()(q_values.squeeze(), target_q_values)
+                    td_errors = (q_values.squeeze() - target_q_values).detach().cpu().numpy()
+                    memory.update_priorities(indices, td_errors)
+
+                    loss = (weights * nn.SmoothL1Loss(reduction='none')(q_values.squeeze(), target_q_values)).mean()
                     optimizer.zero_grad()
                     loss.backward()
                     optimizer.step()
