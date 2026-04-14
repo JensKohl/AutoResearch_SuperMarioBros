@@ -118,9 +118,8 @@ class DistanceReward(gym.Wrapper):
         x_pos = info.get('x_pos', 0)
         reward += (x_pos - self.curr_x) * 2.0
         self.curr_x = x_pos
-        reward -= 0.1
         if info.get('flag_get', False):
-            reward += 1000.0
+            reward += 10000.0  # Dominant signal: finishing the level is everything
         return obs, reward, terminated, truncated, info
 
 
@@ -169,26 +168,14 @@ def train():
 
     n_actions = env.action_space.n
     policy_net = PolicyModel(n_actions).to(device)
-    model_path = "MODELS/model.pt"
-    warm_start = os.path.exists(model_path)
-    if warm_start:
-        policy_net.load_state_dict(torch.load(model_path, map_location=device))
-        print(f"Warm start: loaded model from {model_path}")
-        # Freeze conv layers to preserve visual features; only update FC decision layers
-        for param in policy_net.conv.parameters():
-            param.requires_grad = False
     target_net = PolicyModel(n_actions).to(device)
     target_net.load_state_dict(policy_net.state_dict())
     target_net.eval()
 
-    # Use smaller LR and fill buffer before learning when warm-starting
-    fine_tune_lr = LR * 0.5 if warm_start else LR
-    trainable_params = [p for p in policy_net.parameters() if p.requires_grad]
-    optimizer = optim.RMSprop(trainable_params, lr=fine_tune_lr, alpha=0.95, eps=0.01, momentum=0.95)
+    optimizer = optim.RMSprop(policy_net.parameters(), lr=LR, alpha=0.95, eps=0.01, momentum=0.95)
     memory = ReplayBuffer(MEMORY_SIZE)
     steps_done = 0
-    # Delay learning start when warm-starting to avoid corrupting weights before buffer has diverse data
-    learn_start = 2000 if warm_start else BATCH_SIZE
+    learn_start = BATCH_SIZE
 
     start_time = time.time()
     total_rewards = []
@@ -203,9 +190,8 @@ def train():
             episode_reward = 0
 
             for t in range(MAX_EPISODE_STEPS):
-                eps_start = 0.3 if warm_start else EPS_START
                 elapsed_frac = (time.time() - start_time) / TIME_BUDGET
-                eps_threshold = EPS_END + (eps_start - EPS_END) * max(0.0, 1.0 - elapsed_frac / 0.8)
+                eps_threshold = EPS_END + (EPS_START - EPS_END) * max(0.0, 1.0 - elapsed_frac / 0.8)
                 if random.random() > eps_threshold:
                     with torch.no_grad():
                         state_tensor = torch.FloatTensor(state).unsqueeze(0).to(device) / 255.0
