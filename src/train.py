@@ -121,6 +121,8 @@ class DistanceReward(gym.Wrapper):
         reward -= 0.1
         if info.get('flag_get', False):
             reward += 1000.0
+        elif terminated:
+            reward -= 50.0
         return obs, reward, terminated, truncated, info
 
 
@@ -230,7 +232,6 @@ def train():
                     loss = nn.SmoothL1Loss()(q_values.squeeze(), target_q_values)
                     optimizer.zero_grad()
                     loss.backward()
-                    nn.utils.clip_grad_norm_(policy_net.parameters(), 10)
                     optimizer.step()
 
                 if steps_done % TARGET_UPDATE == 0:
