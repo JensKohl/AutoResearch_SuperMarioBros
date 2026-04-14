@@ -178,7 +178,7 @@ def train():
     target_net.load_state_dict(policy_net.state_dict())
     target_net.eval()
 
-    fine_tune_lr = LR * 0.1 if warm_start else LR
+    fine_tune_lr = LR * 0.3 if warm_start else LR
     optimizer = optim.RMSprop(policy_net.parameters(), lr=fine_tune_lr, alpha=0.95, eps=0.01, momentum=0.95)
     memory = ReplayBuffer(MEMORY_SIZE)
     steps_done = 0
