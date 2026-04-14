@@ -24,14 +24,14 @@ N_WORKERS = 8
 BATCH_SIZE = 256
 BUFFER_SIZE = 200000
 GAMMA = 0.99
-LR = 1e-5  # Extremely slow: tiny Q-value updates preserve warm-start knowledge
+LR = 3e-5  # Slightly higher: faster convergence while still preserving warm-start
 TARGET_UPDATE_INTERVAL = 200
 TRAIN_START = 10000
 TRAIN_FREQ = 32
 GREEDY_CHECK_INTERVAL = 5000
 
 # ApeX-style diverse epsilon per worker
-WORKER_EPSILONS = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]  # pure greedy: all workers follow warm-start model
+WORKER_EPSILONS = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.15]  # 7 greedy + 1 exploratory
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 warnings.filterwarnings("ignore")
