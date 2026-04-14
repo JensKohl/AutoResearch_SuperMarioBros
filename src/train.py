@@ -224,6 +224,8 @@ def train():
                     best_total_reward = current_total
                     best_score = current_score
                     best_time = current_time
+                    os.makedirs("MODELS", exist_ok=True)
+                    torch.save(policy_net.state_dict(), "MODELS/model.pt")
 
                 if len(memory) > learn_start:
                     states, actions, rewards, next_states, dones = memory.sample(BATCH_SIZE)
@@ -260,8 +262,11 @@ def train():
         pass
     finally:
         env.close()
-        os.makedirs("MODELS", exist_ok=True)
-        torch.save(policy_net.state_dict(), "MODELS/model.pt")
+        # model.pt is saved during training whenever best_total_reward is updated.
+        # If training never made progress (edge case), ensure a model is saved.
+        if not os.path.exists("MODELS/model.pt"):
+            os.makedirs("MODELS", exist_ok=True)
+            torch.save(policy_net.state_dict(), "MODELS/model.pt")
 
         training_seconds = time.time() - start_time
         print(f"training_seconds: {training_seconds:.1f}")
