@@ -19,20 +19,19 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from src.constants import TIME_BUDGET, MAX_EPISODE_STEPS, PRO_MOVEMENT
 from src.model import PolicyModel
 
-# Dueling Double DQN hyperparameters
+# PPO hyperparameters
 N_WORKERS = 8
-BATCH_SIZE = 256
-BUFFER_SIZE = 200000
+N_STEPS = 128           # env steps per worker before each PPO update
+N_EPOCHS = 4            # PPO gradient epochs per rollout
+MINI_BATCH_SIZE = 256   # mini-batch size within each epoch
+LR = 2.5e-4
 GAMMA = 0.99
-LR = 1e-5
-TARGET_UPDATE_INTERVAL = 200
-TRAIN_START = 10000
-TRAIN_FREQ = 32
-GREEDY_CHECK_INTERVAL = 5000
-
-# Exp-91 analog for x=1959 barrier: eps=0.3 + original filter → post-crossing greedy navigation
-BARRIER_X_THRESHOLD = 1959
-BARRIER_EPSILON = 0.3  # 70% greedy after crossing helps navigate past barrier (like exp91)
+GAE_LAMBDA = 0.95
+CLIP_EPS = 0.1
+ENT_COEF = 0.01         # entropy bonus coefficient (encourages exploration)
+VF_COEF = 0.5           # value loss coefficient
+MAX_GRAD_NORM = 0.5
+GREEDY_CHECK_ROLLOUTS = 8   # run greedy eval every N rollouts
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 warnings.filterwarnings("ignore")
@@ -156,30 +155,9 @@ def wrap_env(raw_env):
     return env
 
 
-class ReplayBuffer:
-    def __init__(self, capacity):
-        self.buf = deque(maxlen=capacity)
-
-    def add(self, s, a, r, s2, done):
-        self.buf.append((s, a, r, s2, done))
-
-    def sample(self, n):
-        batch = random.sample(self.buf, n)
-        s, a, r, s2, d = zip(*batch)
-        return (
-            torch.FloatTensor(np.array(s)).to(device) / 255.0,
-            torch.LongTensor(a).to(device),
-            torch.FloatTensor(r).to(device),
-            torch.FloatTensor(np.array(s2)).to(device) / 255.0,
-            torch.FloatTensor(d).to(device),
-        )
-
-    def __len__(self):
-        return len(self.buf)
-
-
 def greedy_eval_x(model, eval_env):
-    """Returns (max_x, final_score) for the greedy episode."""
+    """Returns (max_x, final_score) for a greedy (deterministic) episode."""
+    model.eval()
     state, _ = eval_env.reset()
     max_x = 0
     final_score = 0
@@ -192,6 +170,7 @@ def greedy_eval_x(model, eval_env):
         final_score = info.get('score', 0)
         if terminated or truncated:
             break
+    model.train()
     return max_x, final_score
 
 
@@ -202,103 +181,157 @@ def train():
 
     n_actions = envs[0].action_space.n
     model = PolicyModel(n_actions).to(device)
-    target = PolicyModel(n_actions).to(device)
-    optimizer = optim.Adam(model.parameters(), lr=LR)
+    optimizer = optim.Adam(model.parameters(), lr=LR, eps=1e-5)
 
+    # Warm start: load CNN weights from the saved DQN checkpoint.
+    # The DQN used 'advantage.*' for action scores and 'value.*' for state value.
+    # We map those to PPO's 'policy.*' and 'value_head.*'. Only the CNN layers
+    # transfer cleanly (same architecture). The FC policy head gets fresh orthogonal
+    # init (set in model.py), so we only copy conv.* from the checkpoint.
     model_path = "MODELS/model.pt"
     model_saved = False
     if os.path.exists(model_path):
         try:
-            model.load_state_dict(torch.load(model_path, map_location=device))
+            saved = torch.load(model_path, map_location=device)
+            # Copy only conv layers — FC heads are incompatibly scaled (DQN Q-values vs PPO logits)
+            model_dict = model.state_dict()
+            conv_weights = {k: v for k, v in saved.items() if k.startswith('conv.')}
+            model_dict.update(conv_weights)
+            model.load_state_dict(model_dict)
             model_saved = True
-            print(f"Warm start from {model_path}")
+            print(f"Warm start: loaded CNN from {model_path}, fresh policy/value heads")
         except Exception as e:
             print(f"Warm start failed ({e}), starting fresh")
-    target.load_state_dict(model.state_dict())
-    target.eval()
 
-    buffer = ReplayBuffer(BUFFER_SIZE)
+    best_greedy_x, best_greedy_score = greedy_eval_x(model, eval_env)
+    best_combined = best_greedy_x + best_greedy_score
+    print(f"Baseline: x={best_greedy_x} score={best_greedy_score} combined={best_combined}")
+
     start_time = time.time()
-
+    rollout_count = 0
     total_ep_rewards = []
-    ep_reward = [0.0] * N_WORKERS
-    update_count = 0
-    env_steps = 0
-    worker_x = [0.0] * N_WORKERS
-    if model_saved:
-        best_greedy_x, best_greedy_score = greedy_eval_x(model, eval_env)
-        print(f"Warm start baseline: greedy x={best_greedy_x} score={best_greedy_score}")
-    else:
-        best_greedy_x = 0
-        best_greedy_score = 0
-
+    ep_rewards = [0.0] * N_WORKERS
     best_total_reward = -float('inf')
     best_score = 0
     best_time = 0
 
     try:
         while time.time() - start_time < TIME_BUDGET:
-            for i in range(N_WORKERS):
-                epsilon = BARRIER_EPSILON if worker_x[i] >= BARRIER_X_THRESHOLD else 0.0
-                if random.random() < epsilon:
-                    action = random.randrange(n_actions)
-                else:
-                    st = torch.FloatTensor(states[i]).unsqueeze(0).to(device) / 255.0
-                    with torch.no_grad():
-                        action = model(st).max(1)[1].item()
+            # ── Collect rollout ──────────────────────────────────────────────────
+            mb_states = []
+            mb_actions = []
+            mb_log_probs = []
+            mb_values = []
+            mb_rewards = []
+            mb_dones = []
 
-                next_state, reward, terminated, truncated, info = envs[i].step(action)
-                done = terminated or truncated
-                ep_reward[i] += reward
-                new_x = info.get('x_pos', 0)
-                # Exp-91 selective filter: always add pre-barrier; at barrier, only add if crossed
-                at_barrier = (worker_x[i] >= BARRIER_X_THRESHOLD)
-                if not at_barrier or new_x > BARRIER_X_THRESHOLD:
-                    buffer.add(states[i], action, reward, next_state, float(done))
-                worker_x[i] = new_x
+            for step in range(N_STEPS):
+                states_t = torch.FloatTensor(
+                    np.array(states, dtype=np.float32) / 255.0
+                ).to(device)
 
-                current_time = info.get('time', 0)
-                current_score = info.get('score', 0)
-                ct = current_time + current_score
-                if ct > best_total_reward:
-                    best_total_reward = ct
-                    best_score = current_score
-                    best_time = current_time
-
-                if done:
-                    total_ep_rewards.append(ep_reward[i])
-                    ep_reward[i] = 0.0
-                    worker_x[i] = 0.0
-                    states[i] = envs[i].reset()[0]
-                else:
-                    states[i] = next_state
-
-            env_steps += N_WORKERS
-
-            if len(buffer) >= TRAIN_START and env_steps % TRAIN_FREQ == 0:
-                s, a, r, s2, d = buffer.sample(BATCH_SIZE)
                 with torch.no_grad():
-                    next_actions = model(s2).argmax(1)
-                    next_q = target(s2).gather(1, next_actions.unsqueeze(1)).squeeze(1)
-                    target_q = r + GAMMA * next_q * (1 - d)
-                current_q = model(s).gather(1, a.unsqueeze(1)).squeeze(1)
-                loss = nn.MSELoss()(current_q, target_q)
+                    logits, values = model.full_forward(states_t)
+                    dist = torch.distributions.Categorical(logits=logits)
+                    actions = dist.sample()
+                    log_probs = dist.log_prob(actions)
 
-                if not torch.isnan(loss):
+                mb_states.append(states_t)
+                mb_actions.append(actions)
+                mb_log_probs.append(log_probs)
+                mb_values.append(values.squeeze(-1))
+
+                step_rewards = []
+                step_dones = []
+                next_states = []
+
+                for i in range(N_WORKERS):
+                    ns, r, term, trunc, info = envs[i].step(actions[i].item())
+                    done = term or trunc
+                    ep_rewards[i] += r
+                    step_rewards.append(r)
+                    step_dones.append(float(done))
+
+                    ct = info.get('time', 0) + info.get('score', 0)
+                    if ct > best_total_reward:
+                        best_total_reward = ct
+                        best_score = info.get('score', 0)
+                        best_time = info.get('time', 0)
+
+                    if done:
+                        total_ep_rewards.append(ep_rewards[i])
+                        ep_rewards[i] = 0.0
+                        ns = envs[i].reset()[0]
+                    next_states.append(ns)
+
+                mb_rewards.append(torch.FloatTensor(step_rewards).to(device))
+                mb_dones.append(torch.FloatTensor(step_dones).to(device))
+                states = next_states
+
+            # ── Compute GAE returns ──────────────────────────────────────────────
+            states_t = torch.FloatTensor(
+                np.array(states, dtype=np.float32) / 255.0
+            ).to(device)
+            with torch.no_grad():
+                _, last_values = model.full_forward(states_t)
+                last_values = last_values.squeeze(-1)
+
+            returns_list = []
+            gae = torch.zeros(N_WORKERS, device=device)
+            for t in reversed(range(N_STEPS)):
+                next_val = last_values if t == N_STEPS - 1 else mb_values[t + 1]
+                delta = mb_rewards[t] + GAMMA * next_val * (1.0 - mb_dones[t]) - mb_values[t]
+                gae = delta + GAMMA * GAE_LAMBDA * (1.0 - mb_dones[t]) * gae
+                returns_list.insert(0, gae + mb_values[t])
+
+            # Flatten to (N_STEPS * N_WORKERS,)
+            all_states = torch.cat(mb_states, dim=0)
+            all_actions = torch.cat(mb_actions, dim=0)
+            all_log_probs = torch.cat(mb_log_probs, dim=0).detach()
+            all_values = torch.cat(mb_values, dim=0).detach()
+            all_returns = torch.stack(returns_list, dim=0).view(-1).detach()
+            all_advantages = all_returns - all_values
+            all_advantages = (all_advantages - all_advantages.mean()) / (all_advantages.std() + 1e-8)
+
+            # ── PPO update ───────────────────────────────────────────────────────
+            batch_size = N_STEPS * N_WORKERS
+            indices = np.arange(batch_size)
+
+            for _ in range(N_EPOCHS):
+                np.random.shuffle(indices)
+                for start in range(0, batch_size, MINI_BATCH_SIZE):
+                    mb_idx = indices[start:start + MINI_BATCH_SIZE]
+                    s = all_states[mb_idx]
+                    a = all_actions[mb_idx]
+                    old_lp = all_log_probs[mb_idx]
+                    adv = all_advantages[mb_idx]
+                    ret = all_returns[mb_idx]
+
+                    logits, values = model.full_forward(s)
+                    dist = torch.distributions.Categorical(logits=logits)
+                    new_lp = dist.log_prob(a)
+                    entropy = dist.entropy().mean()
+
+                    ratio = torch.exp(new_lp - old_lp)
+                    surr1 = ratio * adv
+                    surr2 = torch.clamp(ratio, 1.0 - CLIP_EPS, 1.0 + CLIP_EPS) * adv
+                    policy_loss = -torch.min(surr1, surr2).mean()
+                    value_loss = nn.MSELoss()(values.squeeze(-1), ret)
+                    loss = policy_loss + VF_COEF * value_loss - ENT_COEF * entropy
+
                     optimizer.zero_grad()
                     loss.backward()
-                    nn.utils.clip_grad_norm_(model.parameters(), 10.0)
+                    nn.utils.clip_grad_norm_(model.parameters(), MAX_GRAD_NORM)
                     optimizer.step()
-                    update_count += 1
 
-                if update_count % TARGET_UPDATE_INTERVAL == 0:
-                    target.load_state_dict(model.state_dict())
+            rollout_count += 1
 
-            if env_steps % GREEDY_CHECK_INTERVAL == 0 and len(buffer) >= TRAIN_START:
+            # ── Greedy checkpoint ────────────────────────────────────────────────
+            if rollout_count % GREEDY_CHECK_ROLLOUTS == 0:
                 gx, gs = greedy_eval_x(model, eval_env)
                 combined = gx + gs
-                best_combined = best_greedy_x + best_greedy_score
                 if combined > best_combined:
+                    best_combined = combined
                     best_greedy_x, best_greedy_score = gx, gs
                     model_saved = True
                     os.makedirs("MODELS", exist_ok=True)
@@ -307,10 +340,11 @@ def train():
                 else:
                     print(f"  Greedy check: x={gx} score={gs} combined={combined} (best={best_combined})")
 
-            if total_ep_rewards and env_steps % (GREEDY_CHECK_INTERVAL // 2) == 0:
+            if total_ep_rewards and rollout_count % 4 == 0:
                 gpu_temp = get_gpu_temp()
                 mean_r = np.mean(total_ep_rewards[-N_WORKERS:])
-                print(f"Steps {env_steps:>7} | MeanReward: {mean_r:>7.1f} | Updates: {update_count} | Buf: {len(buffer)} | GPU: {gpu_temp}C")
+                env_steps = rollout_count * N_STEPS * N_WORKERS
+                print(f"Rollout {rollout_count:>4} | Steps {env_steps:>7} | MeanReward: {mean_r:>7.1f} | GPU: {gpu_temp}C")
                 if gpu_temp >= MAX_GPU_TEMP:
                     print(f"GPU {gpu_temp}C >= {MAX_GPU_TEMP}C -- stopping.")
                     break
