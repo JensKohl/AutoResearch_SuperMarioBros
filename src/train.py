@@ -24,19 +24,15 @@ N_WORKERS = 8
 BATCH_SIZE = 256
 BUFFER_SIZE = 200000
 GAMMA = 0.99
-LR = 1e-5  # Low to avoid degrading x=2023 route
+LR = 1e-5  # Very low to preserve x=2023 policy
 TARGET_UPDATE_INTERVAL = 200
 TRAIN_START = 10000
 TRAIN_FREQ = 32
 GREEDY_CHECK_INTERVAL = 5000
 
-# Workers 0-4: pure greedy; Workers 5-7: barrier explorers
-# Only transitions at x >= CAPTURE_FROM_X are buffered; only flush if they cross CROSS_X
-N_GREEDY = 5
-BARRIER_EPSILON = 0.3
-EXPLORE_FROM_X = 2015   # start exploring 8 units before barrier (not 123 units before)
-CAPTURE_FROM_X = 2015   # only buffer transitions at x >= this (avoids contaminating early states)
-CROSS_X = 2023          # success = agent actually crossed current barrier
+# Selective barrier replay: explore at barrier, only keep successful crossing transitions
+BARRIER_X_THRESHOLD = 2022
+BARRIER_EPSILON = 0.3  # 30% random at barrier
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 warnings.filterwarnings("ignore")
@@ -234,6 +230,7 @@ def train():
     ep_reward = [0.0] * N_WORKERS
     update_count = 0
     env_steps = 0
+    worker_x = [0.0] * N_WORKERS
     # Bug fix: initialize best_greedy_x and best_greedy_score from warm start performance
     if model_saved:
         best_greedy_x, best_greedy_score = greedy_eval_x(model, eval_env)
@@ -246,20 +243,11 @@ def train():
     best_score = 0
     best_time = 0
 
-    # Selective barrier replay: per-worker state
-    worker_x = [0] * N_WORKERS
-    worker_ep_max_x = [0] * N_WORKERS
-    worker_barrier_buf = [[] for _ in range(N_WORKERS)]
-
     try:
         while time.time() - start_time < TIME_BUDGET:
             for i in range(N_WORKERS):
-                # Greedy workers always greedy; barrier workers explore from EXPLORE_FROM_X
-                if i < N_GREEDY:
-                    epsilon = 0.0
-                else:
-                    epsilon = BARRIER_EPSILON if worker_x[i] >= EXPLORE_FROM_X else 0.0
-
+                # State-conditional: greedy everywhere, explore only at x>=BARRIER_X_THRESHOLD
+                epsilon = BARRIER_EPSILON if worker_x[i] >= BARRIER_X_THRESHOLD else 0.0
                 if random.random() < epsilon:
                     action = random.randrange(n_actions)
                 else:
@@ -270,16 +258,12 @@ def train():
                 next_state, reward, terminated, truncated, info = envs[i].step(action)
                 done = terminated or truncated
                 ep_reward[i] += reward
-                x_pos = info.get('x_pos', 0)
-                worker_x[i] = x_pos
-                worker_ep_max_x[i] = max(worker_ep_max_x[i], x_pos)
-
-                if i < N_GREEDY:
+                new_x = info.get('x_pos', 0)
+                # Selective barrier replay: at barrier, only add if transition crosses it
+                at_barrier = (worker_x[i] >= BARRIER_X_THRESHOLD)
+                if not at_barrier or new_x > BARRIER_X_THRESHOLD:
                     buffer.add(states[i], action, reward, next_state, float(done))
-                else:
-                    # Only capture transitions at/near the barrier to avoid contaminating early states
-                    if x_pos >= CAPTURE_FROM_X:
-                        worker_barrier_buf[i].append((states[i], action, reward, next_state, float(done)))
+                worker_x[i] = new_x
 
                 current_time = info.get('time', 0)
                 current_score = info.get('score', 0)
@@ -292,15 +276,7 @@ def train():
                 if done:
                     total_ep_rewards.append(ep_reward[i])
                     ep_reward[i] = 0.0
-                    if i >= N_GREEDY:
-                        # Only flush if episode actually crossed past the current barrier
-                        if worker_ep_max_x[i] > CROSS_X:
-                            for t in worker_barrier_buf[i]:
-                                buffer.add(*t)
-                            print(f"  [Barrier worker {i}] CROSSED! max_x={worker_ep_max_x[i]}, flushed {len(worker_barrier_buf[i])} transitions")
-                        worker_barrier_buf[i] = []
-                        worker_ep_max_x[i] = 0
-                    worker_x[i] = 0
+                    worker_x[i] = 0.0
                     states[i] = envs[i].reset()[0]
                 else:
                     states[i] = next_state
