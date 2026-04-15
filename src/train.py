@@ -24,15 +24,15 @@ N_WORKERS = 8
 BATCH_SIZE = 256
 BUFFER_SIZE = 200000
 GAMMA = 0.99
-LR = 1e-5
+LR = 1e-4  # Higher: barrier crossings must update Q-values fast enough
 TARGET_UPDATE_INTERVAL = 200
 TRAIN_START = 10000
 TRAIN_FREQ = 32
-GREEDY_CHECK_INTERVAL = 5000
+GREEDY_CHECK_INTERVAL = 1000  # Check 5x more often to catch early improvements
 
-# Selective barrier replay to push past x=2023 again (with bug fix)
+# Selective barrier replay — only keep transitions that cross the barrier
 BARRIER_X_THRESHOLD = 2022
-BARRIER_EPSILON = 0.3
+BARRIER_EPSILON = 0.5   # Higher: more random actions at barrier = more crossing attempts
 BASE_EPSILONS = [0.0] * 8
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
