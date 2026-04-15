@@ -24,15 +24,14 @@ N_WORKERS = 8
 BATCH_SIZE = 256
 BUFFER_SIZE = 200000
 GAMMA = 0.99
-LR = 1e-6  # 10x smaller: preserve warm-start route, allow slow crossing reinforcement
+LR = 1e-5
 TARGET_UPDATE_INTERVAL = 200
-TRAIN_START = 20000  # delay training: accumulate crossings before first gradient update
+TRAIN_START = 10000
 TRAIN_FREQ = 32
-GREEDY_CHECK_INTERVAL = 5000
+GREEDY_CHECK_INTERVAL = 2000  # 2.5x more frequent: catch more lucky checkpoints
 
-# Target actual x=1959 barrier: strict filter + bonus + pure random exploration there
-BARRIER_CROSSING_BONUS = 500.0
-BARRIER_X_THRESHOLD = 1959
+# Exp-91 style, from x=2023 backup: original selective filter, no bonus, eps=1.0 at x=2022
+BARRIER_X_THRESHOLD = 2022
 BARRIER_EPSILON = 1.0
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -115,20 +114,15 @@ class DistanceReward(gym.Wrapper):
     def __init__(self, env):
         super().__init__(env)
         self.curr_x = 0
-        self.barrier_crossed = False
 
     def reset(self, **kwargs):
         self.curr_x = 0
-        self.barrier_crossed = False
         return self.env.reset(**kwargs)
 
     def step(self, action):
         obs, reward, terminated, truncated, info = self.env.step(action)
         x_pos = info.get('x_pos', 0)
         reward += (x_pos - self.curr_x) * 2.0
-        if not self.barrier_crossed and x_pos > BARRIER_X_THRESHOLD:
-            reward += BARRIER_CROSSING_BONUS
-            self.barrier_crossed = True
         self.curr_x = x_pos
         reward -= 0.1
         if info.get('flag_get', False):
@@ -257,11 +251,9 @@ def train():
                 done = terminated or truncated
                 ep_reward[i] += reward
                 new_x = info.get('x_pos', 0)
-                # Strict filter: pre-barrier always added; only exact crossing step added.
-                # Prevents post-crossing death transitions from corrupting Q-values.
-                pre_barrier = (worker_x[i] < BARRIER_X_THRESHOLD)
-                crossing = (worker_x[i] <= BARRIER_X_THRESHOLD and new_x > BARRIER_X_THRESHOLD)
-                if pre_barrier or crossing:
+                # Exp-91 selective filter: always add pre-barrier; at barrier, only add if crossed
+                at_barrier = (worker_x[i] >= BARRIER_X_THRESHOLD)
+                if not at_barrier or new_x > BARRIER_X_THRESHOLD:
                     buffer.add(states[i], action, reward, next_state, float(done))
                 worker_x[i] = new_x
 
