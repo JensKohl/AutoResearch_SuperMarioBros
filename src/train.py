@@ -30,9 +30,9 @@ TRAIN_START = 10000
 TRAIN_FREQ = 32
 GREEDY_CHECK_INTERVAL = 5000
 
-# Exact exp-91 style: eps=0.3, original filter, no bonus, no score delta
-BARRIER_X_THRESHOLD = 2022
-BARRIER_EPSILON = 0.3  # exp-91 used 0.3 and achieved x=2195 (all-time best)
+# Exp-91 analog for x=1959 barrier: eps=0.3 + original filter → post-crossing greedy navigation
+BARRIER_X_THRESHOLD = 1959
+BARRIER_EPSILON = 0.3  # 70% greedy after crossing helps navigate past barrier (like exp91)
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 warnings.filterwarnings("ignore")
