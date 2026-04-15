@@ -24,16 +24,15 @@ N_WORKERS = 8
 BATCH_SIZE = 256
 BUFFER_SIZE = 200000
 GAMMA = 0.99
-LR = 1e-5  # Very low to avoid catastrophic forgetting of pre-barrier policy
+LR = 1e-4
 TARGET_UPDATE_INTERVAL = 200
 TRAIN_START = 10000
 TRAIN_FREQ = 32
 GREEDY_CHECK_INTERVAL = 5000
+FRESH_START = True  # skip warm start
 
-# State-conditional exploration: greedy before barrier, explore at/beyond barrier
-BARRIER_X_THRESHOLD = 1900  # Start exploring when near x=2023
-BARRIER_EPSILON = 0.5       # 50% random actions at/beyond barrier
-BASE_EPSILONS = [0.0] * 8   # Pure greedy before barrier
+# ApeX-style diverse epsilon per worker
+WORKER_EPSILONS = [0.05, 0.15, 0.25, 0.35, 0.50, 0.65, 0.80, 0.95]
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 warnings.filterwarnings("ignore")
@@ -115,16 +114,21 @@ class DistanceReward(gym.Wrapper):
     def __init__(self, env):
         super().__init__(env)
         self.curr_x = 0
+        self.prev_score = 0
 
     def reset(self, **kwargs):
         self.curr_x = 0
+        self.prev_score = 0
         return self.env.reset(**kwargs)
 
     def step(self, action):
         obs, reward, terminated, truncated, info = self.env.step(action)
         x_pos = info.get('x_pos', 0)
+        score = info.get('score', 0)
         reward += (x_pos - self.curr_x) * 2.0
+        reward += (score - self.prev_score) * 0.05  # score delta bonus
         self.curr_x = x_pos
+        self.prev_score = score
         reward -= 0.1
         if info.get('flag_get', False):
             reward += 1000.0
@@ -203,10 +207,10 @@ def train():
     target = PolicyModel(n_actions).to(device)
     optimizer = optim.Adam(model.parameters(), lr=LR)
 
-    # Warm start if available
+    # Warm start unless FRESH_START is set
     model_path = "MODELS/model.pt"
     model_saved = False
-    if os.path.exists(model_path):
+    if not FRESH_START and os.path.exists(model_path):
         try:
             model.load_state_dict(torch.load(model_path, map_location=device))
             model_saved = True  # treat warm-start model as "already saved" — protect it
@@ -224,7 +228,6 @@ def train():
     update_count = 0
     env_steps = 0
     best_greedy_x = 0
-    worker_x = [0.0] * N_WORKERS  # track each worker's current x position
     # model_saved set above (True if warm start loaded, False otherwise)
 
     best_total_reward = -float('inf')
@@ -234,11 +237,7 @@ def train():
     try:
         while time.time() - start_time < TIME_BUDGET:
             for i in range(N_WORKERS):
-                # State-conditional epsilon: explore near/beyond the barrier
-                if worker_x[i] >= BARRIER_X_THRESHOLD:
-                    epsilon = BARRIER_EPSILON
-                else:
-                    epsilon = BASE_EPSILONS[i]
+                epsilon = WORKER_EPSILONS[i]
                 if random.random() < epsilon:
                     action = random.randrange(n_actions)
                 else:
@@ -249,7 +248,6 @@ def train():
                 next_state, reward, terminated, truncated, info = envs[i].step(action)
                 done = terminated or truncated
                 ep_reward[i] += reward
-                worker_x[i] = info.get('x_pos', 0)
                 buffer.add(states[i], action, reward, next_state, float(done))
 
                 current_time = info.get('time', 0)
@@ -263,7 +261,6 @@ def train():
                 if done:
                     total_ep_rewards.append(ep_reward[i])
                     ep_reward[i] = 0.0
-                    worker_x[i] = 0.0
                     states[i] = envs[i].reset()[0]
                 else:
                     states[i] = next_state
