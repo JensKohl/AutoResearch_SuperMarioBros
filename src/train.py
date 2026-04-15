@@ -24,14 +24,14 @@ N_WORKERS = 8
 BATCH_SIZE = 256
 BUFFER_SIZE = 200000
 GAMMA = 0.99
-LR = 1e-4
+LR = 2.5e-4  # Fresh start
 TARGET_UPDATE_INTERVAL = 200
-TRAIN_START = 3000     # smaller: only x>1200 transitions so buffer fills slowly
+TRAIN_START = 10000
 TRAIN_FREQ = 32
 GREEDY_CHECK_INTERVAL = 5000
 
 # ApeX-style diverse epsilon per worker
-WORKER_EPSILONS = [0.0, 0.0, 0.0, 0.0, 0.30, 0.50, 0.70, 0.90]  # 4 greedy + 4 exploratory
+WORKER_EPSILONS = [0.01, 0.05, 0.10, 0.20, 0.30, 0.50, 0.70, 0.90]  # diverse epsilon for fresh start
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 warnings.filterwarnings("ignore")
@@ -201,11 +201,14 @@ def train():
     target = PolicyModel(n_actions).to(device)
     optimizer = optim.Adam(model.parameters(), lr=LR)
 
-    # Warm start if available (will be populated by subsequent runs)
+    # Warm start if available. IMPORTANT: set model_saved=True so the finally block
+    # never overwrites a good warm-start model with a degraded final model.
     model_path = "MODELS/model.pt"
+    model_saved = False
     if os.path.exists(model_path):
         try:
             model.load_state_dict(torch.load(model_path, map_location=device))
+            model_saved = True  # treat warm-start model as "already saved" — protect it
             print(f"Warm start from {model_path}")
         except Exception as e:
             print(f"Warm start failed ({e}), starting fresh")
@@ -220,7 +223,7 @@ def train():
     update_count = 0
     env_steps = 0
     best_greedy_x = 0
-    model_saved = False
+    # model_saved set above (True if warm start loaded, False otherwise)
 
     best_total_reward = -float('inf')
     best_score = 0
@@ -240,8 +243,7 @@ def train():
                 next_state, reward, terminated, truncated, info = envs[i].step(action)
                 done = terminated or truncated
                 ep_reward[i] += reward
-                if info.get('x_pos', 0) > 1200:   # only train on late-level transitions
-                    buffer.add(states[i], action, reward, next_state, float(done))
+                buffer.add(states[i], action, reward, next_state, float(done))
 
                 current_time = info.get('time', 0)
                 current_score = info.get('score', 0)
