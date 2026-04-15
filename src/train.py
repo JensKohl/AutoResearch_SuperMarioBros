@@ -30,8 +30,7 @@ TRAIN_START = 10000
 TRAIN_FREQ = 32
 GREEDY_CHECK_INTERVAL = 5000
 
-# Workers 0-4: pure greedy (preserve x=2023 route)
-# Workers 5-7: state-conditional barrier explorers (greedy until x>=2022, then eps=0.3)
+# Workers 0-4: pure greedy; Workers 5-7: state-conditional barrier explorers
 N_GREEDY = 5
 BARRIER_X = 2022
 BARRIER_EPSILON = 0.3
@@ -245,15 +244,14 @@ def train():
     best_time = 0
 
     # Selective barrier replay: per-worker state
-    worker_x = [0] * N_WORKERS          # current x_pos per worker
-    worker_ep_max_x = [0] * N_WORKERS   # max x reached this episode
-    worker_barrier_buf = [[] for _ in range(N_WORKERS)]  # temp buffer for barrier transitions
+    worker_x = [0] * N_WORKERS
+    worker_ep_max_x = [0] * N_WORKERS
+    worker_barrier_buf = [[] for _ in range(N_WORKERS)]
 
     try:
         while time.time() - start_time < TIME_BUDGET:
             for i in range(N_WORKERS):
-                # Determine epsilon: greedy workers always greedy,
-                # barrier workers greedy below BARRIER_X, explore at/above it
+                # Greedy workers always greedy; barrier workers state-conditional
                 if i < N_GREEDY:
                     epsilon = 0.0
                 else:
@@ -274,10 +272,9 @@ def train():
                 worker_ep_max_x[i] = max(worker_ep_max_x[i], x_pos)
 
                 if i < N_GREEDY:
-                    # Greedy workers: always add to main buffer
                     buffer.add(states[i], action, reward, next_state, float(done))
                 else:
-                    # Barrier explorers: buffer transitions to temp, flush on episode success
+                    # Buffer barrier transitions; only flush if episode crossed BARRIER_X
                     worker_barrier_buf[i].append((states[i], action, reward, next_state, float(done)))
 
                 current_time = info.get('time', 0)
@@ -291,7 +288,6 @@ def train():
                 if done:
                     total_ep_rewards.append(ep_reward[i])
                     ep_reward[i] = 0.0
-                    # For barrier workers: only flush to main buffer if episode crossed BARRIER_X
                     if i >= N_GREEDY:
                         if worker_ep_max_x[i] > BARRIER_X:
                             for t in worker_barrier_buf[i]:
