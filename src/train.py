@@ -24,15 +24,16 @@ N_WORKERS = 8
 BATCH_SIZE = 256
 BUFFER_SIZE = 200000
 GAMMA = 0.99
-LR = 1e-5  # Very low to preserve x=2023 policy
+LR = 1e-4  # Higher LR for FC-only training (conv frozen, so no risk of conv corruption)
 TARGET_UPDATE_INTERVAL = 200
 TRAIN_START = 10000
 TRAIN_FREQ = 32
-GREEDY_CHECK_INTERVAL = 1000  # check frequently to catch model right after a crossing
+GREEDY_CHECK_INTERVAL = 2000
 
-# Selective barrier replay: explore at barrier, only keep successful crossing transitions
+# Selective barrier replay + frozen conv: explore at barrier, only keep crossing transitions
+# Frozen conv prevents spatial feature corruption; only FC value/advantage heads update
 BARRIER_X_THRESHOLD = 2022
-BARRIER_EPSILON = 0.3  # 30% random at barrier
+BARRIER_EPSILON = 0.3
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 warnings.filterwarnings("ignore")
@@ -208,7 +209,10 @@ def train():
     n_actions = envs[0].action_space.n
     model = PolicyModel(n_actions).to(device)
     target = PolicyModel(n_actions).to(device)
-    optimizer = optim.Adam(model.parameters(), lr=LR)
+    # Freeze conv layers — only train value and advantage FC heads
+    for param in model.conv.parameters():
+        param.requires_grad = False
+    optimizer = optim.Adam(filter(lambda p: p.requires_grad, model.parameters()), lr=LR)
 
     # Warm start if available
     model_path = "MODELS/model.pt"
@@ -246,7 +250,7 @@ def train():
     try:
         while time.time() - start_time < TIME_BUDGET:
             for i in range(N_WORKERS):
-                # State-conditional: greedy everywhere, explore only at x>=BARRIER_X_THRESHOLD
+                # State-conditional: greedy below barrier, explore at/above it
                 epsilon = BARRIER_EPSILON if worker_x[i] >= BARRIER_X_THRESHOLD else 0.0
                 if random.random() < epsilon:
                     action = random.randrange(n_actions)
@@ -259,7 +263,7 @@ def train():
                 done = terminated or truncated
                 ep_reward[i] += reward
                 new_x = info.get('x_pos', 0)
-                # Selective barrier replay: at barrier, only add if transition crosses it
+                # Selective barrier replay: only add barrier transitions that succeed
                 at_barrier = (worker_x[i] >= BARRIER_X_THRESHOLD)
                 if not at_barrier or new_x > BARRIER_X_THRESHOLD:
                     buffer.add(states[i], action, reward, next_state, float(done))
