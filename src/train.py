@@ -24,16 +24,14 @@ N_WORKERS = 8
 BATCH_SIZE = 256
 BUFFER_SIZE = 200000
 GAMMA = 0.99
-LR = 1e-5
+LR = 5e-5  # Moderate: allow learning score collection without destroying x=2023 route
 TARGET_UPDATE_INTERVAL = 200
 TRAIN_START = 10000
 TRAIN_FREQ = 32
-GREEDY_CHECK_INTERVAL = 1000
+GREEDY_CHECK_INTERVAL = 5000
 
-# Systematic action search: workers try different Q-value ranked actions at barrier
-BARRIER_X_THRESHOLD = 2022
-# Workers 0-2: pure greedy (rank 0); Workers 3-7: try rank 1,2,3,4,5 at barrier
-BARRIER_WORKER_RANK = [0, 0, 0, 1, 2, 3, 4, 5]  # Q-value rank to use at barrier
+# ApeX-style diverse epsilon: explore for score opportunities
+WORKER_EPSILONS = [0.05, 0.15, 0.25, 0.35, 0.50, 0.65, 0.80, 0.95]
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 warnings.filterwarnings("ignore")
@@ -115,16 +113,21 @@ class DistanceReward(gym.Wrapper):
     def __init__(self, env):
         super().__init__(env)
         self.curr_x = 0
+        self.prev_score = 0
 
     def reset(self, **kwargs):
         self.curr_x = 0
+        self.prev_score = 0
         return self.env.reset(**kwargs)
 
     def step(self, action):
         obs, reward, terminated, truncated, info = self.env.step(action)
         x_pos = info.get('x_pos', 0)
+        score = info.get('score', 0)
         reward += (x_pos - self.curr_x) * 2.0
+        reward += (score - self.prev_score) * 0.15  # strong score delta bonus
         self.curr_x = x_pos
+        self.prev_score = score
         reward -= 0.1
         if info.get('flag_get', False):
             reward += 1000.0
@@ -223,9 +226,7 @@ def train():
     ep_reward = [0.0] * N_WORKERS
     update_count = 0
     env_steps = 0
-    worker_x = [0.0] * N_WORKERS
-    # Bug fix: initialize best_greedy_x from warm start performance so early
-    # degraded training can't overwrite the warm-start model.pt
+    # Bug fix: initialize best_greedy_x from warm start performance
     if model_saved:
         best_greedy_x = greedy_eval_x(model, eval_env)
         print(f"Warm start baseline: greedy x={best_greedy_x}")
@@ -239,25 +240,18 @@ def train():
     try:
         while time.time() - start_time < TIME_BUDGET:
             for i in range(N_WORKERS):
-                st = torch.FloatTensor(states[i]).unsqueeze(0).to(device) / 255.0
-                with torch.no_grad():
-                    q_vals = model(st)[0]
-                if worker_x[i] >= BARRIER_X_THRESHOLD:
-                    # Systematic action search: try rank-k best action at barrier
-                    rank = BARRIER_WORKER_RANK[i]
-                    action = int(q_vals.argsort(descending=True)[rank].item())
+                epsilon = WORKER_EPSILONS[i]
+                if random.random() < epsilon:
+                    action = random.randrange(n_actions)
                 else:
-                    action = int(q_vals.argmax().item())
+                    st = torch.FloatTensor(states[i]).unsqueeze(0).to(device) / 255.0
+                    with torch.no_grad():
+                        action = model(st).max(1)[1].item()
 
                 next_state, reward, terminated, truncated, info = envs[i].step(action)
                 done = terminated or truncated
                 ep_reward[i] += reward
-                new_x = info.get('x_pos', 0)
-                # Selective barrier replay: at barrier, only add transition if it crosses
-                at_barrier = (worker_x[i] >= BARRIER_X_THRESHOLD)
-                if not at_barrier or new_x > BARRIER_X_THRESHOLD:
-                    buffer.add(states[i], action, reward, next_state, float(done))
-                worker_x[i] = new_x
+                buffer.add(states[i], action, reward, next_state, float(done))
 
                 current_time = info.get('time', 0)
                 current_score = info.get('score', 0)
@@ -270,7 +264,6 @@ def train():
                 if done:
                     total_ep_rewards.append(ep_reward[i])
                     ep_reward[i] = 0.0
-                    worker_x[i] = 0.0
                     states[i] = envs[i].reset()[0]
                 else:
                     states[i] = next_state
