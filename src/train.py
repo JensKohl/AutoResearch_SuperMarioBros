@@ -193,14 +193,19 @@ def train():
     if os.path.exists(model_path):
         try:
             saved = torch.load(model_path, map_location=device)
-            # Copy only conv layers — FC heads are incompatibly scaled (DQN Q-values vs PPO logits)
-            model_dict = model.state_dict()
-            conv_weights = {k: v for k, v in saved.items() if k.startswith('conv.')}
-            model_dict.update(conv_weights)
-            model.load_state_dict(model_dict)
-            # NOTE: do NOT set model_saved=True here — CNN load != saved PPO model.
+            if any(k.startswith('policy.') for k in saved):
+                # PPO format checkpoint: load all weights and continue training
+                model.load_state_dict(saved)
+                print(f"Warm start: loaded full PPO model from {model_path}")
+            else:
+                # DQN format checkpoint: copy only conv layers (FC heads have wrong scale)
+                model_dict = model.state_dict()
+                conv_weights = {k: v for k, v in saved.items() if k.startswith('conv.')}
+                model_dict.update(conv_weights)
+                model.load_state_dict(model_dict)
+                print(f"Warm start: loaded CNN from DQN checkpoint, fresh policy/value heads")
+            # NOTE: do NOT set model_saved=True here — loading != saving a PPO model.
             # The finally block must always write a valid PPO-format model.pt.
-            print(f"Warm start: loaded CNN from {model_path}, fresh policy/value heads")
         except Exception as e:
             print(f"Warm start failed ({e}), starting fresh")
 
