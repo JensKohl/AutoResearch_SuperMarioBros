@@ -30,9 +30,9 @@ TRAIN_START = 10000
 TRAIN_FREQ = 32
 GREEDY_CHECK_INTERVAL = 5000
 
-# Exp-91 style: original selective filter, no bonus, higher epsilon
-BARRIER_X_THRESHOLD = 2022
-BARRIER_EPSILON = 1.0  # pure random at barrier — maximize crossing frequency
+# Pure greedy fine-tuning — like exp85 (1137→2023), hoping 1959→2100+
+BARRIER_X_THRESHOLD = 3200  # effectively disabled: workers never reach threshold
+BARRIER_EPSILON = 0.0
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 warnings.filterwarnings("ignore")
