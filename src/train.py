@@ -30,11 +30,9 @@ TRAIN_START = 10000
 TRAIN_FREQ = 32
 GREEDY_CHECK_INTERVAL = 5000
 
-# Strict crossing filter + L2 warmstart regularization
-BARRIER_CROSSING_BONUS = 500.0
+# Exp-91 style: original selective filter, no bonus, higher epsilon
 BARRIER_X_THRESHOLD = 2022
-BARRIER_EPSILON = 0.5
-WARMSTART_REG = 0.001  # L2 penalty to keep weights near warm start (prevents catastrophic forgetting)
+BARRIER_EPSILON = 1.0  # pure random at barrier — maximize crossing frequency
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 warnings.filterwarnings("ignore")
@@ -116,26 +114,16 @@ class DistanceReward(gym.Wrapper):
     def __init__(self, env):
         super().__init__(env)
         self.curr_x = 0
-        self.prev_score = 0
-        self.barrier_crossed = False
 
     def reset(self, **kwargs):
         self.curr_x = 0
-        self.prev_score = 0
-        self.barrier_crossed = False
         return self.env.reset(**kwargs)
 
     def step(self, action):
         obs, reward, terminated, truncated, info = self.env.step(action)
         x_pos = info.get('x_pos', 0)
-        score = info.get('score', 0)
         reward += (x_pos - self.curr_x) * 2.0
-        reward += (score - self.prev_score) * 0.3
-        if not self.barrier_crossed and x_pos > BARRIER_X_THRESHOLD:
-            reward += BARRIER_CROSSING_BONUS
-            self.barrier_crossed = True
         self.curr_x = x_pos
-        self.prev_score = score
         reward -= 0.1
         if info.get('flag_get', False):
             reward += 1000.0
@@ -230,9 +218,6 @@ def train():
     target.load_state_dict(model.state_dict())
     target.eval()
 
-    # Snapshot warm-start weights for L2 regularization
-    warmstart_params = {k: v.clone().detach() for k, v in model.named_parameters()}
-
     buffer = ReplayBuffer(BUFFER_SIZE)
     start_time = time.time()
 
@@ -269,12 +254,10 @@ def train():
                 done = terminated or truncated
                 ep_reward[i] += reward
                 new_x = info.get('x_pos', 0)
-                # Strict filter: pre-barrier steps always added; only the exact
-                # crossing step added (worker was <=threshold, now past it).
-                # Post-crossing transitions excluded to prevent Q-value corruption.
-                pre_barrier = (worker_x[i] < BARRIER_X_THRESHOLD)
-                crossing = (worker_x[i] <= BARRIER_X_THRESHOLD and new_x > BARRIER_X_THRESHOLD)
-                if pre_barrier or crossing:
+                # Original exp-91 selective filter: add all pre-barrier transitions
+                # and any post-crossing transitions; filter only failed barrier attempts.
+                at_barrier = (worker_x[i] >= BARRIER_X_THRESHOLD)
+                if not at_barrier or new_x > BARRIER_X_THRESHOLD:
                     buffer.add(states[i], action, reward, next_state, float(done))
                 worker_x[i] = new_x
 
@@ -305,10 +288,6 @@ def train():
                     target_q = r + GAMMA * next_q * (1 - d)
                 current_q = model(s).gather(1, a.unsqueeze(1)).squeeze(1)
                 loss = nn.MSELoss()(current_q, target_q)
-                if WARMSTART_REG > 0:
-                    reg = sum((p - warmstart_params[k]).pow(2).sum()
-                              for k, p in model.named_parameters())
-                    loss = loss + WARMSTART_REG * reg
 
                 if not torch.isnan(loss):
                     optimizer.zero_grad()
