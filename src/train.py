@@ -24,19 +24,16 @@ N_WORKERS = 8
 BATCH_SIZE = 256
 BUFFER_SIZE = 200000
 GAMMA = 0.99
-LR = 1e-5  # Low to avoid degrading x=2023 route
+LR = 1e-5
 TARGET_UPDATE_INTERVAL = 200
 TRAIN_START = 10000
 TRAIN_FREQ = 32
-GREEDY_CHECK_INTERVAL = 2000
+GREEDY_CHECK_INTERVAL = 5000
 
-# Narrow barrier zone [2022, 2030]: explore only in this zone, capture crossings
-# Outside zone: greedy, add all to main buffer. Inside zone + crossing: add to both buffers.
-BARRIER_X_LO = 2022   # start exploring here
-BARRIER_X_HI = 2030   # once past here, go greedy (stop exploring/filtering)
+# Barrier bonus + state-conditional exploration
+BARRIER_CROSSING_BONUS = 500.0  # huge one-time reward for crossing x=2023
+BARRIER_X_THRESHOLD = 2022
 BARRIER_EPSILON = 0.3
-BARRIER_BUFFER_SIZE = 5000
-BARRIER_BATCH_FRAC = 0.10
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 warnings.filterwarnings("ignore")
@@ -119,10 +116,12 @@ class DistanceReward(gym.Wrapper):
         super().__init__(env)
         self.curr_x = 0
         self.prev_score = 0
+        self.barrier_crossed = False  # one-time bonus per episode
 
     def reset(self, **kwargs):
         self.curr_x = 0
         self.prev_score = 0
+        self.barrier_crossed = False
         return self.env.reset(**kwargs)
 
     def step(self, action):
@@ -130,7 +129,11 @@ class DistanceReward(gym.Wrapper):
         x_pos = info.get('x_pos', 0)
         score = info.get('score', 0)
         reward += (x_pos - self.curr_x) * 2.0
-        reward += (score - self.prev_score) * 0.3  # strong score delta bonus
+        reward += (score - self.prev_score) * 0.3
+        # One-time barrier crossing bonus: incentivize getting past x=2023
+        if not self.barrier_crossed and x_pos > BARRIER_X_THRESHOLD:
+            reward += BARRIER_CROSSING_BONUS
+            self.barrier_crossed = True
         self.curr_x = x_pos
         self.prev_score = score
         reward -= 0.1
@@ -228,7 +231,6 @@ def train():
     target.eval()
 
     buffer = ReplayBuffer(BUFFER_SIZE)
-    barrier_buffer = ReplayBuffer(BARRIER_BUFFER_SIZE)
     start_time = time.time()
 
     total_ep_rewards = []
@@ -251,8 +253,8 @@ def train():
     try:
         while time.time() - start_time < TIME_BUDGET:
             for i in range(N_WORKERS):
-                in_zone = (BARRIER_X_LO <= worker_x[i] <= BARRIER_X_HI)
-                epsilon = BARRIER_EPSILON if in_zone else 0.0
+                # State-conditional: greedy until barrier, explore at/past barrier
+                epsilon = BARRIER_EPSILON if worker_x[i] >= BARRIER_X_THRESHOLD else 0.0
                 if random.random() < epsilon:
                     action = random.randrange(n_actions)
                 else:
@@ -263,18 +265,8 @@ def train():
                 next_state, reward, terminated, truncated, info = envs[i].step(action)
                 done = terminated or truncated
                 ep_reward[i] += reward
-                new_x = info.get('x_pos', 0)
-
-                if in_zone:
-                    if new_x > BARRIER_X_LO:
-                        # Successful crossing: add to both buffers (barrier gets amplified replay)
-                        barrier_buffer.add(states[i], action, reward, next_state, float(done))
-                        buffer.add(states[i], action, reward, next_state, float(done))
-                    # Failed attempts in zone: discard (not added to either buffer)
-                else:
-                    # Outside zone (pre-barrier or post-zone): greedy, add to main buffer
-                    buffer.add(states[i], action, reward, next_state, float(done))
-                worker_x[i] = new_x
+                worker_x[i] = info.get('x_pos', 0)
+                buffer.add(states[i], action, reward, next_state, float(done))
 
                 current_time = info.get('time', 0)
                 current_score = info.get('score', 0)
@@ -295,17 +287,7 @@ def train():
             env_steps += N_WORKERS
 
             if len(buffer) >= TRAIN_START and env_steps % TRAIN_FREQ == 0:
-                # 10% barrier transitions (if any) + 90% main transitions per batch
-                barrier_n = min(int(BATCH_SIZE * BARRIER_BATCH_FRAC), len(barrier_buffer))
-                main_n = BATCH_SIZE - barrier_n
-                s, a, r, s2, d = buffer.sample(main_n)
-                if barrier_n > 0:
-                    sb, ab, rb, s2b, db = barrier_buffer.sample(barrier_n)
-                    s = torch.cat([s, sb])
-                    a = torch.cat([a, ab])
-                    r = torch.cat([r, rb])
-                    s2 = torch.cat([s2, s2b])
-                    d = torch.cat([d, db])
+                s, a, r, s2, d = buffer.sample(BATCH_SIZE)
                 with torch.no_grad():
                     # Double DQN: online net selects action, target net evaluates
                     next_actions = model(s2).argmax(1)
