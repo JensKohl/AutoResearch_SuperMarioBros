@@ -22,14 +22,14 @@ from src.model import PolicyModel
 # Dueling Double DQN hyperparameters
 N_WORKERS = 8
 BATCH_SIZE = 256
-BUFFER_SIZE = 200000
+BUFFER_SIZE = 20000   # Small: tight distribution of recent experiences → faster convergence
 GAMMA = 0.99
-LR = 1e-4
+LR = 2e-4
 TARGET_UPDATE_INTERVAL = 200
-TRAIN_START = 10000
+TRAIN_START = 2000    # Start training very early
 TRAIN_FREQ = 32
 GREEDY_CHECK_INTERVAL = 5000
-FRESH_START = True  # skip warm start
+FRESH_START = True
 
 # ApeX-style diverse epsilon per worker
 WORKER_EPSILONS = [0.05, 0.15, 0.25, 0.35, 0.50, 0.65, 0.80, 0.95]
@@ -152,7 +152,7 @@ def wrap_env(raw_env):
     env = DistanceReward(env)
     env = PreprocessFrame(env)
     env = EnsureChannelFirst(env)
-    env = FrameStack(env, k=8)
+    env = FrameStack(env, k=4)
     return env
 
 
@@ -200,7 +200,7 @@ def train():
     n_actions = envs[0].action_space.n
     model = PolicyModel(n_actions).to(device)
     target = PolicyModel(n_actions).to(device)
-    optimizer = optim.Adam(model.parameters(), lr=LR)
+    optimizer = optim.RMSprop(model.parameters(), lr=LR, alpha=0.99, eps=1e-5)
 
     # Warm start unless FRESH_START is set
     model_path = "MODELS/model.pt"
