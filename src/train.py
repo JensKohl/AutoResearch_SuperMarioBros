@@ -114,21 +114,16 @@ class DistanceReward(gym.Wrapper):
     def __init__(self, env):
         super().__init__(env)
         self.curr_x = 0
-        self.prev_score = 0
 
     def reset(self, **kwargs):
         self.curr_x = 0
-        self.prev_score = 0
         return self.env.reset(**kwargs)
 
     def step(self, action):
         obs, reward, terminated, truncated, info = self.env.step(action)
         x_pos = info.get('x_pos', 0)
-        score = info.get('score', 0)
         reward += (x_pos - self.curr_x) * 2.0
-        reward += (score - self.prev_score) * 0.05  # score delta bonus
         self.curr_x = x_pos
-        self.prev_score = score
         reward -= 0.1
         if info.get('flag_get', False):
             reward += 1000.0
@@ -157,7 +152,7 @@ def wrap_env(raw_env):
     env = DistanceReward(env)
     env = PreprocessFrame(env)
     env = EnsureChannelFirst(env)
-    env = FrameStack(env, k=4)
+    env = FrameStack(env, k=8)
     return env
 
 
