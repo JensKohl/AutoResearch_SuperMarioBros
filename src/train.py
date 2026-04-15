@@ -24,14 +24,14 @@ N_WORKERS = 8
 BATCH_SIZE = 256
 BUFFER_SIZE = 200000
 GAMMA = 0.99
-LR = 5e-5  # Moderate: allow learning score collection without destroying x=2023 route
+LR = 1e-5  # Low to avoid degrading x=2023 route
 TARGET_UPDATE_INTERVAL = 200
 TRAIN_START = 10000
 TRAIN_FREQ = 32
 GREEDY_CHECK_INTERVAL = 5000
 
-# ApeX-style diverse epsilon: explore for score opportunities
-WORKER_EPSILONS = [0.05, 0.15, 0.25, 0.35, 0.50, 0.65, 0.80, 0.95]
+# Moderate exploration: some workers find score, most preserve the good route
+WORKER_EPSILONS = [0.0, 0.0, 0.0, 0.0, 0.05, 0.1, 0.2, 0.3]
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 warnings.filterwarnings("ignore")
@@ -125,7 +125,7 @@ class DistanceReward(gym.Wrapper):
         x_pos = info.get('x_pos', 0)
         score = info.get('score', 0)
         reward += (x_pos - self.curr_x) * 2.0
-        reward += (score - self.prev_score) * 0.15  # strong score delta bonus
+        reward += (score - self.prev_score) * 0.3  # strong score delta bonus
         self.curr_x = x_pos
         self.prev_score = score
         reward -= 0.1
@@ -183,17 +183,20 @@ class ReplayBuffer:
 
 
 def greedy_eval_x(model, eval_env):
+    """Returns (max_x, final_score) for the greedy episode."""
     state, _ = eval_env.reset()
     max_x = 0
+    final_score = 0
     for _ in range(MAX_EPISODE_STEPS):
         st = torch.FloatTensor(state).unsqueeze(0).to(device) / 255.0
         with torch.no_grad():
             action = model(st).max(1)[1].item()
         state, _, terminated, truncated, info = eval_env.step(action)
         max_x = max(max_x, info.get('x_pos', 0))
+        final_score = info.get('score', 0)
         if terminated or truncated:
             break
-    return max_x
+    return max_x, final_score
 
 
 def train():
@@ -226,12 +229,13 @@ def train():
     ep_reward = [0.0] * N_WORKERS
     update_count = 0
     env_steps = 0
-    # Bug fix: initialize best_greedy_x from warm start performance
+    # Bug fix: initialize best_greedy_x and best_greedy_score from warm start performance
     if model_saved:
-        best_greedy_x = greedy_eval_x(model, eval_env)
-        print(f"Warm start baseline: greedy x={best_greedy_x}")
+        best_greedy_x, best_greedy_score = greedy_eval_x(model, eval_env)
+        print(f"Warm start baseline: greedy x={best_greedy_x} score={best_greedy_score}")
     else:
         best_greedy_x = 0
+        best_greedy_score = 0
 
     best_total_reward = -float('inf')
     best_score = 0
@@ -291,15 +295,17 @@ def train():
                     target.load_state_dict(model.state_dict())
 
             if env_steps % GREEDY_CHECK_INTERVAL == 0 and len(buffer) >= TRAIN_START:
-                gx = greedy_eval_x(model, eval_env)
-                if gx > best_greedy_x:
-                    best_greedy_x = gx
+                gx, gs = greedy_eval_x(model, eval_env)
+                combined = gx + gs
+                best_combined = best_greedy_x + best_greedy_score
+                if combined > best_combined:
+                    best_greedy_x, best_greedy_score = gx, gs
                     model_saved = True
                     os.makedirs("MODELS", exist_ok=True)
                     torch.save({k: v.cpu() for k, v in model.state_dict().items()}, "MODELS/model.pt")
-                    print(f"  Greedy checkpoint: x_dist={best_greedy_x} (saved)")
+                    print(f"  Greedy checkpoint: x={gx} score={gs} combined={combined} (saved)")
                 else:
-                    print(f"  Greedy check: x_dist={gx} (best={best_greedy_x})")
+                    print(f"  Greedy check: x={gx} score={gs} combined={combined} (best={best_combined})")
 
             if total_ep_rewards and env_steps % (GREEDY_CHECK_INTERVAL // 2) == 0:
                 gpu_temp = get_gpu_temp()
