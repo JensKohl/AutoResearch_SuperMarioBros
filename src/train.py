@@ -24,16 +24,17 @@ N_WORKERS = 8
 BATCH_SIZE = 256
 BUFFER_SIZE = 200000
 GAMMA = 0.99
-LR = 3e-5  # Slightly higher to learn from barrier-crossing events
+LR = 3e-5  # Phase 1 LR; drops to 1e-5 in phase 2
+LR_PHASE2 = 1e-5
 TARGET_UPDATE_INTERVAL = 200
 TRAIN_START = 10000
 TRAIN_FREQ = 32
 GREEDY_CHECK_INTERVAL = 5000
 
-# 2 greedy + 6 exploratory: exploration must find path past x=2023
-WORKER_EPSILONS = [0.0, 0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6]
-
-BARRIER_X = 2024  # Bonus for first crossing of this barrier
+# Phase 1: moderate exploration to find path past x=2023
+EPSILONS_PHASE1 = [0.0, 0.0, 0.0, 0.1, 0.2, 0.3, 0.4, 0.5]
+# Phase 2: pure greedy to consolidate gains
+EPSILONS_PHASE2 = [0.0] * 8
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 warnings.filterwarnings("ignore")
@@ -115,11 +116,9 @@ class DistanceReward(gym.Wrapper):
     def __init__(self, env):
         super().__init__(env)
         self.curr_x = 0
-        self.barrier_crossed = False
 
     def reset(self, **kwargs):
         self.curr_x = 0
-        self.barrier_crossed = False
         return self.env.reset(**kwargs)
 
     def step(self, action):
@@ -128,10 +127,6 @@ class DistanceReward(gym.Wrapper):
         reward += (x_pos - self.curr_x) * 2.0
         self.curr_x = x_pos
         reward -= 0.1
-        # One-time bonus for first crossing of x=2023 barrier
-        if x_pos >= BARRIER_X and not self.barrier_crossed:
-            self.barrier_crossed = True
-            reward += 500.0
         if info.get('flag_get', False):
             reward += 1000.0
         return obs, reward, terminated, truncated, info
@@ -237,10 +232,21 @@ def train():
     best_score = 0
     best_time = 0
 
+    phase2_started = False
+
     try:
         while time.time() - start_time < TIME_BUDGET:
+            elapsed = time.time() - start_time
+            # Switch to phase 2 (pure greedy, lower LR) at halfway
+            if not phase2_started and elapsed > TIME_BUDGET / 2:
+                phase2_started = True
+                for g in optimizer.param_groups:
+                    g['lr'] = LR_PHASE2
+                print(f"Phase 2: switching to pure greedy + LR={LR_PHASE2}")
+            worker_epsilons = EPSILONS_PHASE2 if phase2_started else EPSILONS_PHASE1
+
             for i in range(N_WORKERS):
-                epsilon = WORKER_EPSILONS[i]
+                epsilon = worker_epsilons[i]
                 if random.random() < epsilon:
                     action = random.randrange(n_actions)
                 else:
