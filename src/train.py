@@ -28,7 +28,7 @@ LR = 5e-5               # lower LR for stable convergence from PPO warm start
 GAMMA = 0.99
 GAE_LAMBDA = 0.95
 CLIP_EPS = 0.1
-ENT_COEF = 0.001        # lower entropy → policy converges to deterministic faster
+ENT_COEF = 0.01         # higher entropy needed for stochastic workers to complete the level
 VF_COEF = 0.5           # value loss coefficient
 MAX_GRAD_NORM = 0.5
 GREEDY_CHECK_ROLLOUTS = 8   # run greedy eval every N rollouts
@@ -239,6 +239,7 @@ def train():
     bc_actions = deque(maxlen=BC_BUFFER_MAX)
     worker_ep_states = [[] for _ in range(N_WORKERS)]   # per-worker current episode states
     worker_ep_actions = [[] for _ in range(N_WORKERS)]  # per-worker current episode actions
+    worker_flag_get = [False] * N_WORKERS  # flag_get may appear before done; track per episode
     bc_episodes_total = 0
 
     try:
@@ -282,6 +283,9 @@ def train():
                     # Track per-worker episode for BC
                     worker_ep_states[i].append((states_t[i].cpu() * 255).byte())
                     worker_ep_actions[i].append(actions[i].cpu())
+                    # flag_get can appear before done (during victory animation), so track per episode
+                    if info.get('flag_get', False):
+                        worker_flag_get[i] = True
 
                     ct = info.get('time', 0) + info.get('score', 0)
                     if ct > best_total_reward:
@@ -292,17 +296,17 @@ def train():
                     if done:
                         total_ep_rewards.append(ep_rewards[i])
                         ep_rewards[i] = 0.0
-                        if info.get('flag_get', False):
+                        if worker_flag_get[i]:
                             # Add successful episode to BC buffer
                             bc_states.extend(worker_ep_states[i])
                             bc_actions.extend(worker_ep_actions[i])
                             bc_episodes_total += 1
-                            # Defer greedy eval to after this rollout finishes (calling
-                            # eval_env.reset() mid-step loop causes NES emulator crash on Windows)
+                            # Defer greedy eval to after this rollout finishes
                             flag_get_this_rollout = True
-                            print(f"  BC: episode {bc_episodes_total} added ({len(worker_ep_states[i])} steps, buf={len(bc_states)})")
+                            print(f"  BC: ep {bc_episodes_total} added ({len(worker_ep_states[i])} steps, buf={len(bc_states)})")
                         worker_ep_states[i] = []
                         worker_ep_actions[i] = []
+                        worker_flag_get[i] = False
                         ns = envs[i].reset()[0]
                     next_states.append(ns)
 
