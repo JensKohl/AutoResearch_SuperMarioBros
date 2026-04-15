@@ -30,10 +30,11 @@ TRAIN_START = 10000
 TRAIN_FREQ = 32
 GREEDY_CHECK_INTERVAL = 5000
 
-# Strict crossing filter: bonus + only exact crossing step + pre-barrier
+# Strict crossing filter + L2 warmstart regularization
 BARRIER_CROSSING_BONUS = 500.0
 BARRIER_X_THRESHOLD = 2022
 BARRIER_EPSILON = 0.5
+WARMSTART_REG = 0.001  # L2 penalty to keep weights near warm start (prevents catastrophic forgetting)
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 warnings.filterwarnings("ignore")
@@ -229,6 +230,9 @@ def train():
     target.load_state_dict(model.state_dict())
     target.eval()
 
+    # Snapshot warm-start weights for L2 regularization
+    warmstart_params = {k: v.clone().detach() for k, v in model.named_parameters()}
+
     buffer = ReplayBuffer(BUFFER_SIZE)
     start_time = time.time()
 
@@ -301,6 +305,10 @@ def train():
                     target_q = r + GAMMA * next_q * (1 - d)
                 current_q = model(s).gather(1, a.unsqueeze(1)).squeeze(1)
                 loss = nn.MSELoss()(current_q, target_q)
+                if WARMSTART_REG > 0:
+                    reg = sum((p - warmstart_params[k]).pow(2).sum()
+                              for k, p in model.named_parameters())
+                    loss = loss + WARMSTART_REG * reg
 
                 if not torch.isnan(loss):
                     optimizer.zero_grad()
