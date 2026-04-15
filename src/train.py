@@ -24,9 +24,9 @@ N_WORKERS = 8
 BATCH_SIZE = 256
 BUFFER_SIZE = 200000
 GAMMA = 0.99
-LR = 1e-5
+LR = 1e-6  # 10x smaller: preserve warm-start route, allow slow crossing reinforcement
 TARGET_UPDATE_INTERVAL = 200
-TRAIN_START = 10000
+TRAIN_START = 20000  # delay training: accumulate crossings before first gradient update
 TRAIN_FREQ = 32
 GREEDY_CHECK_INTERVAL = 5000
 
