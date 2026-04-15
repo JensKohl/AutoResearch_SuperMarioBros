@@ -22,16 +22,17 @@ from src.model import PolicyModel
 # Dueling Double DQN hyperparameters
 N_WORKERS = 8
 BATCH_SIZE = 256
-BUFFER_SIZE = 200000
+BUFFER_SIZE = 50000
 GAMMA = 0.99
-LR = 1e-5  # Low to avoid degrading x=2023 route
+LR = 1e-4  # Higher LR for fresh start
 TARGET_UPDATE_INTERVAL = 200
 TRAIN_START = 10000
 TRAIN_FREQ = 32
 GREEDY_CHECK_INTERVAL = 5000
+FRESH_START = True  # Skip warm start for score-farming experiment
 
-# Moderate exploration: some workers find score, most preserve the good route
-WORKER_EPSILONS = [0.0, 0.0, 0.0, 0.0, 0.05, 0.1, 0.2, 0.3]
+# ApeX diverse epsilons for fresh start: broad exploration
+WORKER_EPSILONS = [0.05, 0.15, 0.25, 0.35, 0.50, 0.65, 0.80, 0.95]
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 warnings.filterwarnings("ignore")
@@ -124,8 +125,8 @@ class DistanceReward(gym.Wrapper):
         obs, reward, terminated, truncated, info = self.env.step(action)
         x_pos = info.get('x_pos', 0)
         score = info.get('score', 0)
-        reward += (x_pos - self.curr_x) * 2.0
-        reward += (score - self.prev_score) * 0.3  # strong score delta bonus
+        reward += (x_pos - self.curr_x) * 0.5  # reduced distance to give score priority
+        reward += (score - self.prev_score) * 1.0  # score delta = distance reward
         self.curr_x = x_pos
         self.prev_score = score
         reward -= 0.1
@@ -209,10 +210,10 @@ def train():
     target = PolicyModel(n_actions).to(device)
     optimizer = optim.Adam(model.parameters(), lr=LR)
 
-    # Warm start if available
+    # Warm start if available and not a fresh start experiment
     model_path = "MODELS/model.pt"
     model_saved = False
-    if os.path.exists(model_path):
+    if not FRESH_START and os.path.exists(model_path):
         try:
             model.load_state_dict(torch.load(model_path, map_location=device))
             model_saved = True  # treat warm-start model as "already saved" — protect it
