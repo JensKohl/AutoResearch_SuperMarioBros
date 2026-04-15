@@ -28,7 +28,7 @@ LR = 5e-5               # lower LR for stable convergence from PPO warm start
 GAMMA = 0.99
 GAE_LAMBDA = 0.95
 CLIP_EPS = 0.1
-ENT_COEF = 0.01         # higher entropy needed for stochastic workers to complete the level
+ENT_COEF = 0.001        # lower entropy: workers follow learned policy more reliably → more level completions for BC
 VF_COEF = 0.5           # value loss coefficient
 MAX_GRAD_NORM = 0.5
 GREEDY_CHECK_ROLLOUTS = 8   # run greedy eval every N rollouts
@@ -144,11 +144,16 @@ class FrameSkip(gym.Wrapper):
         total_reward = 0.0
         terminated = False
         truncated = False
+        any_flag_get = False
         for _ in range(self.skip):
             obs, reward, terminated, truncated, info = self.env.step(action)
             total_reward += reward
+            if info.get('flag_get', False):
+                any_flag_get = True
             if terminated or truncated:
                 break
+        if any_flag_get:
+            info['flag_get'] = True
         return obs, total_reward, terminated, truncated, info
 
 
