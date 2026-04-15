@@ -30,9 +30,10 @@ TRAIN_START = 10000
 TRAIN_FREQ = 32
 GREEDY_CHECK_INTERVAL = 5000
 
-# Pure greedy fine-tuning — like exp85 (1137→2023), hoping 1959→2100+
-BARRIER_X_THRESHOLD = 3200  # effectively disabled: workers never reach threshold
-BARRIER_EPSILON = 0.0
+# Target actual x=1959 barrier: strict filter + bonus + pure random exploration there
+BARRIER_CROSSING_BONUS = 500.0
+BARRIER_X_THRESHOLD = 1959
+BARRIER_EPSILON = 1.0
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 warnings.filterwarnings("ignore")
@@ -114,15 +115,20 @@ class DistanceReward(gym.Wrapper):
     def __init__(self, env):
         super().__init__(env)
         self.curr_x = 0
+        self.barrier_crossed = False
 
     def reset(self, **kwargs):
         self.curr_x = 0
+        self.barrier_crossed = False
         return self.env.reset(**kwargs)
 
     def step(self, action):
         obs, reward, terminated, truncated, info = self.env.step(action)
         x_pos = info.get('x_pos', 0)
         reward += (x_pos - self.curr_x) * 2.0
+        if not self.barrier_crossed and x_pos > BARRIER_X_THRESHOLD:
+            reward += BARRIER_CROSSING_BONUS
+            self.barrier_crossed = True
         self.curr_x = x_pos
         reward -= 0.1
         if info.get('flag_get', False):
@@ -196,68 +202,149 @@ def greedy_eval_x(model, eval_env):
 
 
 def train():
-    """Evolutionary search: perturb advantage FC head, keep if greedy eval improves.
-    No gradient updates — avoids catastrophic forgetting entirely."""
+    envs = [wrap_env(make_env(render=False)) for _ in range(N_WORKERS)]
     eval_env = wrap_env(make_env(render=False))
-    n_actions = eval_env.action_space.n
+    states = [env.reset()[0] for env in envs]
 
+    n_actions = envs[0].action_space.n
     model = PolicyModel(n_actions).to(device)
+    target = PolicyModel(n_actions).to(device)
+    optimizer = optim.Adam(model.parameters(), lr=LR)
+
     model_path = "MODELS/model.pt"
+    model_saved = False
     if os.path.exists(model_path):
-        model.load_state_dict(torch.load(model_path, map_location=device))
-        print(f"Warm start from {model_path}")
-    model.eval()
+        try:
+            model.load_state_dict(torch.load(model_path, map_location=device))
+            model_saved = True
+            print(f"Warm start from {model_path}")
+        except Exception as e:
+            print(f"Warm start failed ({e}), starting fresh")
+    target.load_state_dict(model.state_dict())
+    target.eval()
 
-    best_x, best_score = greedy_eval_x(model, eval_env)
-    best_combined = best_x + best_score
-    best_state = {k: v.clone().detach().cpu() for k, v in model.state_dict().items()}
-    print(f"Baseline: x={best_x} score={best_score} combined={best_combined}")
-    os.makedirs("MODELS", exist_ok=True)
-    torch.save(best_state, model_path)
-
-    candidate = PolicyModel(n_actions).to(device)
-    candidate.eval()
+    buffer = ReplayBuffer(BUFFER_SIZE)
     start_time = time.time()
-    n_evals = 0
-    noise_std = 0.05  # perturbation magnitude for advantage.2 (last FC of advantage head)
+
+    total_ep_rewards = []
+    ep_reward = [0.0] * N_WORKERS
+    update_count = 0
+    env_steps = 0
+    worker_x = [0.0] * N_WORKERS
+    if model_saved:
+        best_greedy_x, best_greedy_score = greedy_eval_x(model, eval_env)
+        print(f"Warm start baseline: greedy x={best_greedy_x} score={best_greedy_score}")
+    else:
+        best_greedy_x = 0
+        best_greedy_score = 0
+
+    best_total_reward = -float('inf')
+    best_score = 0
+    best_time = 0
 
     try:
         while time.time() - start_time < TIME_BUDGET:
-            # Perturb only the advantage head's last layer (directly controls action ranking)
-            candidate_state = {k: v.clone() for k, v in best_state.items()}
-            for k in ['advantage.2.weight', 'advantage.2.bias']:
-                candidate_state[k] = candidate_state[k] + torch.randn_like(candidate_state[k]) * noise_std
-            candidate.load_state_dict({k: v.to(device) for k, v in candidate_state.items()})
+            for i in range(N_WORKERS):
+                epsilon = BARRIER_EPSILON if worker_x[i] >= BARRIER_X_THRESHOLD else 0.0
+                if random.random() < epsilon:
+                    action = random.randrange(n_actions)
+                else:
+                    st = torch.FloatTensor(states[i]).unsqueeze(0).to(device) / 255.0
+                    with torch.no_grad():
+                        action = model(st).max(1)[1].item()
 
-            gx, gs = greedy_eval_x(candidate, eval_env)
-            combined = gx + gs
-            n_evals += 1
+                next_state, reward, terminated, truncated, info = envs[i].step(action)
+                done = terminated or truncated
+                ep_reward[i] += reward
+                new_x = info.get('x_pos', 0)
+                # Strict filter: pre-barrier always added; only exact crossing step added.
+                # Prevents post-crossing death transitions from corrupting Q-values.
+                pre_barrier = (worker_x[i] < BARRIER_X_THRESHOLD)
+                crossing = (worker_x[i] <= BARRIER_X_THRESHOLD and new_x > BARRIER_X_THRESHOLD)
+                if pre_barrier or crossing:
+                    buffer.add(states[i], action, reward, next_state, float(done))
+                worker_x[i] = new_x
 
-            if combined > best_combined:
-                best_combined = combined
-                best_x, best_score = gx, gs
-                best_state = {k: v.clone().detach().cpu() for k, v in candidate_state.items()}
-                torch.save(best_state, model_path)
-                print(f"  Improved [{n_evals}]: x={gx} score={gs} combined={combined} (saved)")
-            else:
-                print(f"  No improv [{n_evals}]: x={gx} score={gs} combined={combined} (best={best_combined})")
+                current_time = info.get('time', 0)
+                current_score = info.get('score', 0)
+                ct = current_time + current_score
+                if ct > best_total_reward:
+                    best_total_reward = ct
+                    best_score = current_score
+                    best_time = current_time
 
-            gpu_temp = get_gpu_temp()
-            if gpu_temp >= MAX_GPU_TEMP:
-                print(f"GPU {gpu_temp}C >= {MAX_GPU_TEMP}C -- stopping.")
-                break
+                if done:
+                    total_ep_rewards.append(ep_reward[i])
+                    ep_reward[i] = 0.0
+                    worker_x[i] = 0.0
+                    states[i] = envs[i].reset()[0]
+                else:
+                    states[i] = next_state
+
+            env_steps += N_WORKERS
+
+            if len(buffer) >= TRAIN_START and env_steps % TRAIN_FREQ == 0:
+                s, a, r, s2, d = buffer.sample(BATCH_SIZE)
+                with torch.no_grad():
+                    next_actions = model(s2).argmax(1)
+                    next_q = target(s2).gather(1, next_actions.unsqueeze(1)).squeeze(1)
+                    target_q = r + GAMMA * next_q * (1 - d)
+                current_q = model(s).gather(1, a.unsqueeze(1)).squeeze(1)
+                loss = nn.MSELoss()(current_q, target_q)
+
+                if not torch.isnan(loss):
+                    optimizer.zero_grad()
+                    loss.backward()
+                    nn.utils.clip_grad_norm_(model.parameters(), 10.0)
+                    optimizer.step()
+                    update_count += 1
+
+                if update_count % TARGET_UPDATE_INTERVAL == 0:
+                    target.load_state_dict(model.state_dict())
+
+            if env_steps % GREEDY_CHECK_INTERVAL == 0 and len(buffer) >= TRAIN_START:
+                gx, gs = greedy_eval_x(model, eval_env)
+                combined = gx + gs
+                best_combined = best_greedy_x + best_greedy_score
+                if combined > best_combined:
+                    best_greedy_x, best_greedy_score = gx, gs
+                    model_saved = True
+                    os.makedirs("MODELS", exist_ok=True)
+                    torch.save({k: v.cpu() for k, v in model.state_dict().items()}, "MODELS/model.pt")
+                    print(f"  Greedy checkpoint: x={gx} score={gs} combined={combined} (saved)")
+                else:
+                    print(f"  Greedy check: x={gx} score={gs} combined={combined} (best={best_combined})")
+
+            if total_ep_rewards and env_steps % (GREEDY_CHECK_INTERVAL // 2) == 0:
+                gpu_temp = get_gpu_temp()
+                mean_r = np.mean(total_ep_rewards[-N_WORKERS:])
+                print(f"Steps {env_steps:>7} | MeanReward: {mean_r:>7.1f} | Updates: {update_count} | Buf: {len(buffer)} | GPU: {gpu_temp}C")
+                if gpu_temp >= MAX_GPU_TEMP:
+                    print(f"GPU {gpu_temp}C >= {MAX_GPU_TEMP}C -- stopping.")
+                    break
+
     except KeyboardInterrupt:
         pass
     finally:
+        for env in envs:
+            env.close()
         eval_env.close()
+        os.makedirs("MODELS", exist_ok=True)
+        if not model_saved:
+            torch.save({k: v.cpu() for k, v in model.state_dict().items()}, "MODELS/model.pt")
+
         training_seconds = time.time() - start_time
         print(f"training_seconds: {training_seconds:.1f}")
         print(f"total_seconds: {training_seconds:.1f}")
         print(f"peak_vram_mb: {torch.cuda.max_memory_allocated() / 1e6 if torch.cuda.is_available() else 0:.1f}")
-        print(f"train_best_reward: {best_combined:.1f}")
-        print(f"train_seconds_to_finish: 999.0")
+
+        seconds_to_finish = 400 - best_time if best_time > 0 else 999
+        print(f"train_best_reward: {best_total_reward:.1f}")
+        print(f"train_seconds_to_finish: {seconds_to_finish:.1f}")
         print(f"train_best_score: {best_score}")
-        print(f"mean_episode_reward: {best_combined:.1f}")
+
+        if total_ep_rewards:
+            print(f"mean_episode_reward: {np.mean(total_ep_rewards):.1f}")
 
 
 if __name__ == "__main__":
