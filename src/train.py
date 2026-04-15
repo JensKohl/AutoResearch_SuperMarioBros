@@ -24,16 +24,17 @@ N_WORKERS = 8
 BATCH_SIZE = 256
 BUFFER_SIZE = 200000
 GAMMA = 0.99
-LR = 1e-4  # Higher LR for FC-only training (conv frozen, so no risk of conv corruption)
+LR = 1e-5  # Low to avoid degrading x=2023 route
 TARGET_UPDATE_INTERVAL = 200
 TRAIN_START = 10000
 TRAIN_FREQ = 32
 GREEDY_CHECK_INTERVAL = 2000
 
-# Selective barrier replay + frozen conv: explore at barrier, only keep crossing transitions
-# Frozen conv prevents spatial feature corruption; only FC value/advantage heads update
+# Dedicated barrier buffer: crossing transitions always appear in 10% of each batch
 BARRIER_X_THRESHOLD = 2022
 BARRIER_EPSILON = 0.3
+BARRIER_BUFFER_SIZE = 5000
+BARRIER_BATCH_FRAC = 0.10  # 10% of batch from barrier buffer = ~26 per batch
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 warnings.filterwarnings("ignore")
@@ -209,10 +210,7 @@ def train():
     n_actions = envs[0].action_space.n
     model = PolicyModel(n_actions).to(device)
     target = PolicyModel(n_actions).to(device)
-    # Freeze conv layers — only train value and advantage FC heads
-    for param in model.conv.parameters():
-        param.requires_grad = False
-    optimizer = optim.Adam(filter(lambda p: p.requires_grad, model.parameters()), lr=LR)
+    optimizer = optim.Adam(model.parameters(), lr=LR)
 
     # Warm start if available
     model_path = "MODELS/model.pt"
@@ -228,6 +226,7 @@ def train():
     target.eval()
 
     buffer = ReplayBuffer(BUFFER_SIZE)
+    barrier_buffer = ReplayBuffer(BARRIER_BUFFER_SIZE)
     start_time = time.time()
 
     total_ep_rewards = []
@@ -263,10 +262,16 @@ def train():
                 done = terminated or truncated
                 ep_reward[i] += reward
                 new_x = info.get('x_pos', 0)
-                # Selective barrier replay: only add barrier transitions that succeed
+
                 at_barrier = (worker_x[i] >= BARRIER_X_THRESHOLD)
-                if not at_barrier or new_x > BARRIER_X_THRESHOLD:
+                if at_barrier and new_x > BARRIER_X_THRESHOLD:
+                    # Successful crossing: add to dedicated barrier buffer (amplified signal)
+                    barrier_buffer.add(states[i], action, reward, next_state, float(done))
                     buffer.add(states[i], action, reward, next_state, float(done))
+                elif not at_barrier:
+                    # Normal pre-barrier transition: add to main buffer only
+                    buffer.add(states[i], action, reward, next_state, float(done))
+                # Failed barrier attempt: discard (not added to either buffer)
                 worker_x[i] = new_x
 
                 current_time = info.get('time', 0)
@@ -288,7 +293,17 @@ def train():
             env_steps += N_WORKERS
 
             if len(buffer) >= TRAIN_START and env_steps % TRAIN_FREQ == 0:
-                s, a, r, s2, d = buffer.sample(BATCH_SIZE)
+                # Mix barrier transitions (10% of batch) with main buffer transitions
+                barrier_n = min(int(BATCH_SIZE * BARRIER_BATCH_FRAC), len(barrier_buffer))
+                main_n = BATCH_SIZE - barrier_n
+                s, a, r, s2, d = buffer.sample(main_n)
+                if barrier_n > 0:
+                    sb, ab, rb, s2b, db = barrier_buffer.sample(barrier_n)
+                    s = torch.cat([s, sb])
+                    a = torch.cat([a, ab])
+                    r = torch.cat([r, rb])
+                    s2 = torch.cat([s2, s2b])
+                    d = torch.cat([d, db])
                 with torch.no_grad():
                     # Double DQN: online net selects action, target net evaluates
                     next_actions = model(s2).argmax(1)
