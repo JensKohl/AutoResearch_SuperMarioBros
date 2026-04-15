@@ -24,16 +24,16 @@ N_WORKERS = 8
 BATCH_SIZE = 256
 BUFFER_SIZE = 200000
 GAMMA = 0.99
-LR = 1e-5  # Very low to preserve x=2195 policy
+LR = 1e-5
 TARGET_UPDATE_INTERVAL = 200
 TRAIN_START = 10000
 TRAIN_FREQ = 32
 GREEDY_CHECK_INTERVAL = 5000
 
-# Pure greedy from x=2195 to consolidate the new best
-BARRIER_X_THRESHOLD = 0     # disable barrier-selective replay
-BARRIER_EPSILON = 0.0
-BASE_EPSILONS = [0.0] * 8   # all pure greedy
+# Selective barrier replay to push past x=2023 again (with bug fix)
+BARRIER_X_THRESHOLD = 2022
+BARRIER_EPSILON = 0.3
+BASE_EPSILONS = [0.0] * 8
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 warnings.filterwarnings("ignore")
@@ -223,9 +223,14 @@ def train():
     ep_reward = [0.0] * N_WORKERS
     update_count = 0
     env_steps = 0
-    best_greedy_x = 0
     worker_x = [0.0] * N_WORKERS
-    # model_saved set above (True if warm start loaded, False otherwise)
+    # Bug fix: initialize best_greedy_x from warm start performance so early
+    # degraded training can't overwrite the warm-start model.pt
+    if model_saved:
+        best_greedy_x = greedy_eval_x(model, eval_env)
+        print(f"Warm start baseline: greedy x={best_greedy_x}")
+    else:
+        best_greedy_x = 0
 
     best_total_reward = -float('inf')
     best_score = 0
