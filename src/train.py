@@ -24,11 +24,11 @@ N_WORKERS = 8
 N_STEPS = 128           # env steps per worker before each PPO update
 N_EPOCHS = 4            # PPO gradient epochs per rollout
 MINI_BATCH_SIZE = 256   # mini-batch size within each epoch
-LR = 2.5e-4
+LR = 5e-5               # lower LR for stable convergence from PPO warm start
 GAMMA = 0.99
 GAE_LAMBDA = 0.95
 CLIP_EPS = 0.1
-ENT_COEF = 0.01         # entropy bonus coefficient (encourages exploration)
+ENT_COEF = 0.001        # lower entropy → policy converges to deterministic faster
 VF_COEF = 0.5           # value loss coefficient
 MAX_GRAD_NORM = 0.5
 GREEDY_CHECK_ROLLOUTS = 8   # run greedy eval every N rollouts
@@ -377,7 +377,14 @@ def train():
         eval_env.close()
         os.makedirs("MODELS", exist_ok=True)
         if not model_saved:
-            torch.save({k: v.cpu() for k, v in model.state_dict().items()}, "MODELS/model.pt")
+            # No greedy checkpoint saved — check final greedy before writing
+            final_gx, final_gs = greedy_eval_x(model, eval_env)
+            final_combined = final_gx + final_gs
+            if final_combined >= best_combined:
+                torch.save({k: v.cpu() for k, v in model.state_dict().items()}, "MODELS/model.pt")
+                print(f"Final save: x={final_gx} score={final_gs} combined={final_combined}")
+            else:
+                print(f"Final model degraded (x={final_gx} combined={final_combined} < best={best_combined}), skipping save")
 
         training_seconds = time.time() - start_time
         print(f"training_seconds: {training_seconds:.1f}")
