@@ -19,7 +19,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from src.constants import TIME_BUDGET, MAX_EPISODE_STEPS, PRO_MOVEMENT
 from src.model import PolicyModel
 
-# PPO hyperparameters
+# PPO + BC hyperparameters
 N_WORKERS = 8
 N_STEPS = 128           # env steps per worker before each PPO update
 N_EPOCHS = 4            # PPO gradient epochs per rollout
@@ -32,6 +32,12 @@ ENT_COEF = 0.001        # lower entropy → policy converges to deterministic fa
 VF_COEF = 0.5           # value loss coefficient
 MAX_GRAD_NORM = 0.5
 GREEDY_CHECK_ROLLOUTS = 8   # run greedy eval every N rollouts
+
+# Behavioral Cloning from successful episodes (flag_get=True)
+BC_COEF = 1.0           # BC loss weight (equal to PPO policy loss scale)
+BC_UPDATES_PER_ROLLOUT = 8
+BC_BATCH_SIZE = 128
+BC_BUFFER_MAX = 20000   # max (s, a) pairs stored from successful episodes
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 warnings.filterwarnings("ignore")
@@ -228,6 +234,13 @@ def train():
     best_score = 0
     best_time = 0
 
+    # BC buffer: stores (uint8 state, action) pairs from episodes where flag_get=True
+    bc_states = deque(maxlen=BC_BUFFER_MAX)  # uint8 to save memory
+    bc_actions = deque(maxlen=BC_BUFFER_MAX)
+    worker_ep_states = [[] for _ in range(N_WORKERS)]   # per-worker current episode states
+    worker_ep_actions = [[] for _ in range(N_WORKERS)]  # per-worker current episode actions
+    bc_episodes_total = 0
+
     try:
         while time.time() - start_time < TIME_BUDGET:
             # ── Collect rollout ──────────────────────────────────────────────────
@@ -266,6 +279,10 @@ def train():
                     step_rewards.append(r)
                     step_dones.append(float(done))
 
+                    # Track per-worker episode for BC
+                    worker_ep_states[i].append((states_t[i].cpu() * 255).byte())
+                    worker_ep_actions[i].append(actions[i].cpu())
+
                     ct = info.get('time', 0) + info.get('score', 0)
                     if ct > best_total_reward:
                         best_total_reward = ct
@@ -276,9 +293,16 @@ def train():
                         total_ep_rewards.append(ep_rewards[i])
                         ep_rewards[i] = 0.0
                         if info.get('flag_get', False):
+                            # Add successful episode to BC buffer
+                            bc_states.extend(worker_ep_states[i])
+                            bc_actions.extend(worker_ep_actions[i])
+                            bc_episodes_total += 1
                             # Defer greedy eval to after this rollout finishes (calling
                             # eval_env.reset() mid-step loop causes NES emulator crash on Windows)
                             flag_get_this_rollout = True
+                            print(f"  BC: episode {bc_episodes_total} added ({len(worker_ep_states[i])} steps, buf={len(bc_states)})")
+                        worker_ep_states[i] = []
+                        worker_ep_actions[i] = []
                         ns = envs[i].reset()[0]
                     next_states.append(ns)
 
@@ -339,6 +363,19 @@ def train():
 
                     optimizer.zero_grad()
                     loss.backward()
+                    nn.utils.clip_grad_norm_(model.parameters(), MAX_GRAD_NORM)
+                    optimizer.step()
+
+            # ── Behavioral Cloning from successful episodes ──────────────────────
+            if len(bc_states) >= BC_BATCH_SIZE:
+                for _ in range(BC_UPDATES_PER_ROLLOUT):
+                    bc_idx = random.sample(range(len(bc_states)), BC_BATCH_SIZE)
+                    bc_s = torch.stack([bc_states[i] for i in bc_idx]).to(device).float() / 255.0
+                    bc_a = torch.stack([bc_actions[i] for i in bc_idx]).to(device)
+                    bc_logits, _ = model.full_forward(bc_s)
+                    bc_loss = nn.CrossEntropyLoss()(bc_logits, bc_a)
+                    optimizer.zero_grad()
+                    (BC_COEF * bc_loss).backward()
                     nn.utils.clip_grad_norm_(model.parameters(), MAX_GRAD_NORM)
                     optimizer.step()
 
