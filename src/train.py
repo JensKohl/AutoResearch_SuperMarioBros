@@ -24,14 +24,14 @@ N_WORKERS = 8
 BATCH_SIZE = 256
 BUFFER_SIZE = 200000
 GAMMA = 0.99
-LR = 1e-4  # Lower for warm start
+LR = 1e-5  # Very low LR for pure-greedy self-training (avoids catastrophic forgetting)
 TARGET_UPDATE_INTERVAL = 200
 TRAIN_START = 10000
 TRAIN_FREQ = 32
 GREEDY_CHECK_INTERVAL = 5000
 
-# ApeX-style diverse epsilon per worker
-WORKER_EPSILONS = [0.05, 0.15, 0.25, 0.35, 0.50, 0.65, 0.80, 0.95]  # shifted higher to explore past x=1137
+# Pure greedy: all workers exploit. Replicates exp74 technique that pushed x=723->1439.
+WORKER_EPSILONS = [0.0] * 8
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 warnings.filterwarnings("ignore")
