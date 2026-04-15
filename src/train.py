@@ -198,7 +198,8 @@ def train():
             conv_weights = {k: v for k, v in saved.items() if k.startswith('conv.')}
             model_dict.update(conv_weights)
             model.load_state_dict(model_dict)
-            model_saved = True
+            # NOTE: do NOT set model_saved=True here — CNN load != saved PPO model.
+            # The finally block must always write a valid PPO-format model.pt.
             print(f"Warm start: loaded CNN from {model_path}, fresh policy/value heads")
         except Exception as e:
             print(f"Warm start failed ({e}), starting fresh")
@@ -261,6 +262,20 @@ def train():
                     if done:
                         total_ep_rewards.append(ep_rewards[i])
                         ep_rewards[i] = 0.0
+                        # When a worker completes the level, immediately checkpoint —
+                        # the stochastic policy is at its peak; capture it for greedy eval.
+                        if info.get('flag_get', False):
+                            gx, gs = greedy_eval_x(model, eval_env)
+                            combined = gx + gs
+                            if combined > best_combined:
+                                best_combined = combined
+                                best_greedy_x, best_greedy_score = gx, gs
+                                model_saved = True
+                                os.makedirs("MODELS", exist_ok=True)
+                                torch.save({k: v.cpu() for k, v in model.state_dict().items()}, "MODELS/model.pt")
+                                print(f"  FLAG GET checkpoint: greedy x={gx} score={gs} combined={combined} (saved)")
+                            else:
+                                print(f"  FLAG GET (worker {i}): greedy x={gx} score={gs} combined={combined} (best={best_combined})")
                         ns = envs[i].reset()[0]
                     next_states.append(ns)
 
