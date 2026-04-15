@@ -22,19 +22,17 @@ from src.model import PolicyModel
 # Dueling Double DQN hyperparameters
 N_WORKERS = 8
 BATCH_SIZE = 256
-BUFFER_SIZE = 200000
+BUFFER_SIZE = 50000  # Smaller = faster warmup = more gradient updates in 10min
 GAMMA = 0.99
-LR = 3e-5  # Phase 1 LR; drops to 1e-5 in phase 2
-LR_PHASE2 = 1e-5
+LR = 2e-4  # RMSprop sweet spot
 TARGET_UPDATE_INTERVAL = 200
-TRAIN_START = 10000
+TRAIN_START = 5000  # Earlier start with smaller buffer
 TRAIN_FREQ = 32
 GREEDY_CHECK_INTERVAL = 5000
+FRESH_START = True  # Skip warm start; build clean policy from scratch
 
-# Phase 1: moderate exploration to find path past x=2023
-EPSILONS_PHASE1 = [0.0, 0.0, 0.0, 0.1, 0.2, 0.3, 0.4, 0.5]
-# Phase 2: pure greedy to consolidate gains
-EPSILONS_PHASE2 = [0.0] * 8
+# ApeX-style diverse epsilon per worker
+WORKER_EPSILONS = [0.05, 0.15, 0.25, 0.35, 0.50, 0.65, 0.80, 0.95]
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 warnings.filterwarnings("ignore")
@@ -202,13 +200,12 @@ def train():
     n_actions = envs[0].action_space.n
     model = PolicyModel(n_actions).to(device)
     target = PolicyModel(n_actions).to(device)
-    optimizer = optim.Adam(model.parameters(), lr=LR)
+    optimizer = optim.RMSprop(model.parameters(), lr=LR, alpha=0.99, eps=1e-5)
 
-    # Warm start if available. IMPORTANT: set model_saved=True so the finally block
-    # never overwrites a good warm-start model with a degraded final model.
+    # Warm start unless FRESH_START is set
     model_path = "MODELS/model.pt"
     model_saved = False
-    if os.path.exists(model_path):
+    if not FRESH_START and os.path.exists(model_path):
         try:
             model.load_state_dict(torch.load(model_path, map_location=device))
             model_saved = True  # treat warm-start model as "already saved" — protect it
@@ -232,21 +229,10 @@ def train():
     best_score = 0
     best_time = 0
 
-    phase2_started = False
-
     try:
         while time.time() - start_time < TIME_BUDGET:
-            elapsed = time.time() - start_time
-            # Switch to phase 2 (pure greedy, lower LR) at halfway
-            if not phase2_started and elapsed > TIME_BUDGET / 2:
-                phase2_started = True
-                for g in optimizer.param_groups:
-                    g['lr'] = LR_PHASE2
-                print(f"Phase 2: switching to pure greedy + LR={LR_PHASE2}")
-            worker_epsilons = EPSILONS_PHASE2 if phase2_started else EPSILONS_PHASE1
-
             for i in range(N_WORKERS):
-                epsilon = worker_epsilons[i]
+                epsilon = WORKER_EPSILONS[i]
                 if random.random() < epsilon:
                     action = random.randrange(n_actions)
                 else:
@@ -284,7 +270,7 @@ def train():
                     next_q = target(s2).gather(1, next_actions.unsqueeze(1)).squeeze(1)
                     target_q = r + GAMMA * next_q * (1 - d)
                 current_q = model(s).gather(1, a.unsqueeze(1)).squeeze(1)
-                loss = nn.MSELoss()(current_q, target_q)
+                loss = nn.HuberLoss()(current_q, target_q)
 
                 if not torch.isnan(loss):
                     optimizer.zero_grad()
