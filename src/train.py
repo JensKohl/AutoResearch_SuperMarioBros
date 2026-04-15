@@ -30,10 +30,11 @@ TRAIN_START = 10000
 TRAIN_FREQ = 32
 GREEDY_CHECK_INTERVAL = 5000
 
-# Workers 0-4: pure greedy; Workers 5-7: state-conditional barrier explorers
+# Workers 0-4: pure greedy; Workers 5-7: explore from x=1900, flush only if they cross x=2023
 N_GREEDY = 5
-BARRIER_X = 2022
+EXPLORE_FROM_X = 1900   # start exploring before the barrier
 BARRIER_EPSILON = 0.3
+CROSS_X = 2023          # must reach PAST current barrier to count as a crossing
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 warnings.filterwarnings("ignore")
@@ -251,11 +252,11 @@ def train():
     try:
         while time.time() - start_time < TIME_BUDGET:
             for i in range(N_WORKERS):
-                # Greedy workers always greedy; barrier workers state-conditional
+                # Greedy workers always greedy; barrier workers explore from EXPLORE_FROM_X
                 if i < N_GREEDY:
                     epsilon = 0.0
                 else:
-                    epsilon = BARRIER_EPSILON if worker_x[i] >= BARRIER_X else 0.0
+                    epsilon = BARRIER_EPSILON if worker_x[i] >= EXPLORE_FROM_X else 0.0
 
                 if random.random() < epsilon:
                     action = random.randrange(n_actions)
@@ -274,7 +275,7 @@ def train():
                 if i < N_GREEDY:
                     buffer.add(states[i], action, reward, next_state, float(done))
                 else:
-                    # Buffer barrier transitions; only flush if episode crossed BARRIER_X
+                    # Barrier explorers: buffer transitions; flush only on barrier success
                     worker_barrier_buf[i].append((states[i], action, reward, next_state, float(done)))
 
                 current_time = info.get('time', 0)
@@ -289,10 +290,11 @@ def train():
                     total_ep_rewards.append(ep_reward[i])
                     ep_reward[i] = 0.0
                     if i >= N_GREEDY:
-                        if worker_ep_max_x[i] > BARRIER_X:
+                        # Only flush if episode actually crossed the current barrier
+                        if worker_ep_max_x[i] > CROSS_X:
                             for t in worker_barrier_buf[i]:
                                 buffer.add(*t)
-                            print(f"  [Barrier worker {i}] crossed! max_x={worker_ep_max_x[i]}, flushed {len(worker_barrier_buf[i])} transitions")
+                            print(f"  [Barrier worker {i}] CROSSED! max_x={worker_ep_max_x[i]}, flushed {len(worker_barrier_buf[i])} transitions")
                         worker_barrier_buf[i] = []
                         worker_ep_max_x[i] = 0
                     worker_x[i] = 0
