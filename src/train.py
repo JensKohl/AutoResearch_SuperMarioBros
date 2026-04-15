@@ -30,10 +30,10 @@ TRAIN_START = 10000
 TRAIN_FREQ = 32
 GREEDY_CHECK_INTERVAL = 5000
 
-# Strong barrier bonus + selective filtering
-BARRIER_CROSSING_BONUS = 1000.0  # 2x stronger — reward for crossing x=2022
+# Strict crossing filter: bonus + only exact crossing step + pre-barrier
+BARRIER_CROSSING_BONUS = 500.0
 BARRIER_X_THRESHOLD = 2022
-BARRIER_EPSILON = 0.3
+BARRIER_EPSILON = 0.5
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 warnings.filterwarnings("ignore")
@@ -265,9 +265,12 @@ def train():
                 done = terminated or truncated
                 ep_reward[i] += reward
                 new_x = info.get('x_pos', 0)
-                # Selective: only add barrier transitions if they crossed
-                at_barrier = (worker_x[i] >= BARRIER_X_THRESHOLD)
-                if not at_barrier or new_x > BARRIER_X_THRESHOLD:
+                # Strict filter: pre-barrier steps always added; only the exact
+                # crossing step added (worker was <=threshold, now past it).
+                # Post-crossing transitions excluded to prevent Q-value corruption.
+                pre_barrier = (worker_x[i] < BARRIER_X_THRESHOLD)
+                crossing = (worker_x[i] <= BARRIER_X_THRESHOLD and new_x > BARRIER_X_THRESHOLD)
+                if pre_barrier or crossing:
                     buffer.add(states[i], action, reward, next_state, float(done))
                 worker_x[i] = new_x
 
