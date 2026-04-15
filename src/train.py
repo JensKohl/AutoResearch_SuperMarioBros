@@ -28,7 +28,7 @@ LR = 1e-5  # Very low to preserve x=2023 policy
 TARGET_UPDATE_INTERVAL = 200
 TRAIN_START = 10000
 TRAIN_FREQ = 32
-GREEDY_CHECK_INTERVAL = 5000
+GREEDY_CHECK_INTERVAL = 1000  # check frequently to catch model right after a crossing
 
 # Selective barrier replay: explore at barrier, only keep successful crossing transitions
 BARRIER_X_THRESHOLD = 2022
