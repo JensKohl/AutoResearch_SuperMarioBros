@@ -30,8 +30,8 @@ TRAIN_START = 10000
 TRAIN_FREQ = 32
 GREEDY_CHECK_INTERVAL = 5000
 
-# Pure greedy: all workers exploit. Replicates exp74 technique that pushed x=723->1439.
-WORKER_EPSILONS = [0.0] * 8
+# 5 pure greedy + 3 exploratory to break past x=2023 barrier
+WORKER_EPSILONS = [0.0, 0.0, 0.0, 0.0, 0.0, 0.1, 0.2, 0.3]
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 warnings.filterwarnings("ignore")
