@@ -230,6 +230,7 @@ def train():
             mb_values = []
             mb_rewards = []
             mb_dones = []
+            flag_get_this_rollout = False
 
             for step in range(N_STEPS):
                 states_t = torch.FloatTensor(
@@ -267,20 +268,10 @@ def train():
                     if done:
                         total_ep_rewards.append(ep_rewards[i])
                         ep_rewards[i] = 0.0
-                        # When a worker completes the level, immediately checkpoint —
-                        # the stochastic policy is at its peak; capture it for greedy eval.
                         if info.get('flag_get', False):
-                            gx, gs = greedy_eval_x(model, eval_env)
-                            combined = gx + gs
-                            if combined > best_combined:
-                                best_combined = combined
-                                best_greedy_x, best_greedy_score = gx, gs
-                                model_saved = True
-                                os.makedirs("MODELS", exist_ok=True)
-                                torch.save({k: v.cpu() for k, v in model.state_dict().items()}, "MODELS/model.pt")
-                                print(f"  FLAG GET checkpoint: greedy x={gx} score={gs} combined={combined} (saved)")
-                            else:
-                                print(f"  FLAG GET (worker {i}): greedy x={gx} score={gs} combined={combined} (best={best_combined})")
+                            # Defer greedy eval to after this rollout finishes (calling
+                            # eval_env.reset() mid-step loop causes NES emulator crash on Windows)
+                            flag_get_this_rollout = True
                         ns = envs[i].reset()[0]
                     next_states.append(ns)
 
@@ -346,7 +337,23 @@ def train():
 
             rollout_count += 1
 
-            # ── Greedy checkpoint ────────────────────────────────────────────────
+            # ── Post-rollout flag_get checkpoint ─────────────────────────────────
+            # If any worker completed the level this rollout, run greedy eval now.
+            # (Deferred from inside the step loop to avoid NES emulator crash on Windows)
+            if flag_get_this_rollout:
+                gx, gs = greedy_eval_x(model, eval_env)
+                combined = gx + gs
+                if combined > best_combined:
+                    best_combined = combined
+                    best_greedy_x, best_greedy_score = gx, gs
+                    model_saved = True
+                    os.makedirs("MODELS", exist_ok=True)
+                    torch.save({k: v.cpu() for k, v in model.state_dict().items()}, "MODELS/model.pt")
+                    print(f"  FLAG GET checkpoint: greedy x={gx} score={gs} combined={combined} (saved)")
+                else:
+                    print(f"  FLAG GET (rollout): greedy x={gx} score={gs} combined={combined} (best={best_combined})")
+
+            # ── Regular greedy checkpoint ─────────────────────────────────────────
             if rollout_count % GREEDY_CHECK_ROLLOUTS == 0:
                 gx, gs = greedy_eval_x(model, eval_env)
                 combined = gx + gs
