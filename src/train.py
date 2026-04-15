@@ -22,17 +22,18 @@ from src.model import PolicyModel
 # Dueling Double DQN hyperparameters
 N_WORKERS = 8
 BATCH_SIZE = 256
-BUFFER_SIZE = 20000   # Small: tight distribution of recent experiences → faster convergence
+BUFFER_SIZE = 200000
 GAMMA = 0.99
-LR = 2e-4
+LR = 1e-5  # Very low to preserve x=2023 policy
 TARGET_UPDATE_INTERVAL = 200
-TRAIN_START = 2000    # Start training very early
+TRAIN_START = 10000
 TRAIN_FREQ = 32
 GREEDY_CHECK_INTERVAL = 5000
-FRESH_START = True
 
-# ApeX-style diverse epsilon per worker
-WORKER_EPSILONS = [0.05, 0.15, 0.25, 0.35, 0.50, 0.65, 0.80, 0.95]
+# Surgical barrier exploration: greedy everywhere, tiny exploration at x=2022+
+BARRIER_X_THRESHOLD = 2022
+BARRIER_EPSILON = 0.1   # 10% random at the barrier — minimal contamination
+BASE_EPSILONS = [0.0] * 8
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 warnings.filterwarnings("ignore")
@@ -200,12 +201,12 @@ def train():
     n_actions = envs[0].action_space.n
     model = PolicyModel(n_actions).to(device)
     target = PolicyModel(n_actions).to(device)
-    optimizer = optim.RMSprop(model.parameters(), lr=LR, alpha=0.99, eps=1e-5)
+    optimizer = optim.Adam(model.parameters(), lr=LR)
 
-    # Warm start unless FRESH_START is set
+    # Warm start if available
     model_path = "MODELS/model.pt"
     model_saved = False
-    if not FRESH_START and os.path.exists(model_path):
+    if os.path.exists(model_path):
         try:
             model.load_state_dict(torch.load(model_path, map_location=device))
             model_saved = True  # treat warm-start model as "already saved" — protect it
@@ -223,6 +224,7 @@ def train():
     update_count = 0
     env_steps = 0
     best_greedy_x = 0
+    worker_x = [0.0] * N_WORKERS
     # model_saved set above (True if warm start loaded, False otherwise)
 
     best_total_reward = -float('inf')
@@ -232,7 +234,8 @@ def train():
     try:
         while time.time() - start_time < TIME_BUDGET:
             for i in range(N_WORKERS):
-                epsilon = WORKER_EPSILONS[i]
+                # State-conditional: greedy everywhere, explore only at x>=2022
+                epsilon = BARRIER_EPSILON if worker_x[i] >= BARRIER_X_THRESHOLD else BASE_EPSILONS[i]
                 if random.random() < epsilon:
                     action = random.randrange(n_actions)
                 else:
@@ -243,6 +246,7 @@ def train():
                 next_state, reward, terminated, truncated, info = envs[i].step(action)
                 done = terminated or truncated
                 ep_reward[i] += reward
+                worker_x[i] = info.get('x_pos', 0)
                 buffer.add(states[i], action, reward, next_state, float(done))
 
                 current_time = info.get('time', 0)
@@ -256,6 +260,7 @@ def train():
                 if done:
                     total_ep_rewards.append(ep_reward[i])
                     ep_reward[i] = 0.0
+                    worker_x[i] = 0.0
                     states[i] = envs[i].reset()[0]
                 else:
                     states[i] = next_state
