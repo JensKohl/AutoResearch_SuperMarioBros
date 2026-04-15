@@ -30,8 +30,8 @@ TRAIN_START = 10000
 TRAIN_FREQ = 32
 GREEDY_CHECK_INTERVAL = 5000
 
-# Barrier bonus + state-conditional exploration
-BARRIER_CROSSING_BONUS = 500.0  # huge one-time reward for crossing x=2023
+# Strong barrier bonus + selective filtering
+BARRIER_CROSSING_BONUS = 1000.0  # 2x stronger — reward for crossing x=2022
 BARRIER_X_THRESHOLD = 2022
 BARRIER_EPSILON = 0.3
 
@@ -116,7 +116,7 @@ class DistanceReward(gym.Wrapper):
         super().__init__(env)
         self.curr_x = 0
         self.prev_score = 0
-        self.barrier_crossed = False  # one-time bonus per episode
+        self.barrier_crossed = False
 
     def reset(self, **kwargs):
         self.curr_x = 0
@@ -130,7 +130,6 @@ class DistanceReward(gym.Wrapper):
         score = info.get('score', 0)
         reward += (x_pos - self.curr_x) * 2.0
         reward += (score - self.prev_score) * 0.3
-        # One-time barrier crossing bonus: incentivize getting past x=2023
         if not self.barrier_crossed and x_pos > BARRIER_X_THRESHOLD:
             reward += BARRIER_CROSSING_BONUS
             self.barrier_crossed = True
@@ -253,7 +252,7 @@ def train():
     try:
         while time.time() - start_time < TIME_BUDGET:
             for i in range(N_WORKERS):
-                # State-conditional: greedy until barrier, explore at/past barrier
+                # State-conditional: greedy below barrier, explore at barrier
                 epsilon = BARRIER_EPSILON if worker_x[i] >= BARRIER_X_THRESHOLD else 0.0
                 if random.random() < epsilon:
                     action = random.randrange(n_actions)
@@ -265,8 +264,12 @@ def train():
                 next_state, reward, terminated, truncated, info = envs[i].step(action)
                 done = terminated or truncated
                 ep_reward[i] += reward
-                worker_x[i] = info.get('x_pos', 0)
-                buffer.add(states[i], action, reward, next_state, float(done))
+                new_x = info.get('x_pos', 0)
+                # Selective: only add barrier transitions if they crossed
+                at_barrier = (worker_x[i] >= BARRIER_X_THRESHOLD)
+                if not at_barrier or new_x > BARRIER_X_THRESHOLD:
+                    buffer.add(states[i], action, reward, next_state, float(done))
+                worker_x[i] = new_x
 
                 current_time = info.get('time', 0)
                 current_score = info.get('score', 0)
