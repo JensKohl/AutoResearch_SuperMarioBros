@@ -24,16 +24,16 @@ N_WORKERS = 8
 BATCH_SIZE = 256
 BUFFER_SIZE = 200000
 GAMMA = 0.99
-LR = 1e-5  # Low to preserve policy; bug fix ensures warm-start model is protected
+LR = 1e-5
 TARGET_UPDATE_INTERVAL = 200
 TRAIN_START = 10000
 TRAIN_FREQ = 32
-GREEDY_CHECK_INTERVAL = 1000  # Frequent checks to catch early improvements before degradation
+GREEDY_CHECK_INTERVAL = 1000
 
-# Selective barrier replay — only keep transitions that cross the barrier
+# Systematic action search: workers try different Q-value ranked actions at barrier
 BARRIER_X_THRESHOLD = 2022
-BARRIER_EPSILON = 0.5   # Higher chance of barrier crossing per episode
-BASE_EPSILONS = [0.0] * 8
+# Workers 0-2: pure greedy (rank 0); Workers 3-7: try rank 1,2,3,4,5 at barrier
+BARRIER_WORKER_RANK = [0, 0, 0, 1, 2, 3, 4, 5]  # Q-value rank to use at barrier
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 warnings.filterwarnings("ignore")
@@ -239,14 +239,15 @@ def train():
     try:
         while time.time() - start_time < TIME_BUDGET:
             for i in range(N_WORKERS):
-                # State-conditional: greedy everywhere, explore only at x>=2022
-                epsilon = BARRIER_EPSILON if worker_x[i] >= BARRIER_X_THRESHOLD else BASE_EPSILONS[i]
-                if random.random() < epsilon:
-                    action = random.randrange(n_actions)
+                st = torch.FloatTensor(states[i]).unsqueeze(0).to(device) / 255.0
+                with torch.no_grad():
+                    q_vals = model(st)[0]
+                if worker_x[i] >= BARRIER_X_THRESHOLD:
+                    # Systematic action search: try rank-k best action at barrier
+                    rank = BARRIER_WORKER_RANK[i]
+                    action = int(q_vals.argsort(descending=True)[rank].item())
                 else:
-                    st = torch.FloatTensor(states[i]).unsqueeze(0).to(device) / 255.0
-                    with torch.no_grad():
-                        action = model(st).max(1)[1].item()
+                    action = int(q_vals.argmax().item())
 
                 next_state, reward, terminated, truncated, info = envs[i].step(action)
                 done = terminated or truncated
