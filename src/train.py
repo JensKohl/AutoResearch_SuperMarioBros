@@ -30,11 +30,13 @@ TRAIN_START = 10000
 TRAIN_FREQ = 32
 GREEDY_CHECK_INTERVAL = 2000
 
-# Dedicated barrier buffer: crossing transitions always appear in 10% of each batch
-BARRIER_X_THRESHOLD = 2022
+# Narrow barrier zone [2022, 2030]: explore only in this zone, capture crossings
+# Outside zone: greedy, add all to main buffer. Inside zone + crossing: add to both buffers.
+BARRIER_X_LO = 2022   # start exploring here
+BARRIER_X_HI = 2030   # once past here, go greedy (stop exploring/filtering)
 BARRIER_EPSILON = 0.3
 BARRIER_BUFFER_SIZE = 5000
-BARRIER_BATCH_FRAC = 0.10  # 10% of batch from barrier buffer = ~26 per batch
+BARRIER_BATCH_FRAC = 0.10
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 warnings.filterwarnings("ignore")
@@ -249,8 +251,8 @@ def train():
     try:
         while time.time() - start_time < TIME_BUDGET:
             for i in range(N_WORKERS):
-                # State-conditional: greedy below barrier, explore at/above it
-                epsilon = BARRIER_EPSILON if worker_x[i] >= BARRIER_X_THRESHOLD else 0.0
+                in_zone = (BARRIER_X_LO <= worker_x[i] <= BARRIER_X_HI)
+                epsilon = BARRIER_EPSILON if in_zone else 0.0
                 if random.random() < epsilon:
                     action = random.randrange(n_actions)
                 else:
@@ -263,15 +265,15 @@ def train():
                 ep_reward[i] += reward
                 new_x = info.get('x_pos', 0)
 
-                at_barrier = (worker_x[i] >= BARRIER_X_THRESHOLD)
-                if at_barrier and new_x > BARRIER_X_THRESHOLD:
-                    # Successful crossing: add to dedicated barrier buffer (amplified signal)
-                    barrier_buffer.add(states[i], action, reward, next_state, float(done))
+                if in_zone:
+                    if new_x > BARRIER_X_LO:
+                        # Successful crossing: add to both buffers (barrier gets amplified replay)
+                        barrier_buffer.add(states[i], action, reward, next_state, float(done))
+                        buffer.add(states[i], action, reward, next_state, float(done))
+                    # Failed attempts in zone: discard (not added to either buffer)
+                else:
+                    # Outside zone (pre-barrier or post-zone): greedy, add to main buffer
                     buffer.add(states[i], action, reward, next_state, float(done))
-                elif not at_barrier:
-                    # Normal pre-barrier transition: add to main buffer only
-                    buffer.add(states[i], action, reward, next_state, float(done))
-                # Failed barrier attempt: discard (not added to either buffer)
                 worker_x[i] = new_x
 
                 current_time = info.get('time', 0)
@@ -293,7 +295,7 @@ def train():
             env_steps += N_WORKERS
 
             if len(buffer) >= TRAIN_START and env_steps % TRAIN_FREQ == 0:
-                # Mix barrier transitions (10% of batch) with main buffer transitions
+                # 10% barrier transitions (if any) + 90% main transitions per batch
                 barrier_n = min(int(BATCH_SIZE * BARRIER_BATCH_FRAC), len(barrier_buffer))
                 main_n = BATCH_SIZE - barrier_n
                 s, a, r, s2, d = buffer.sample(main_n)
