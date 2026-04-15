@@ -155,28 +155,35 @@ def wrap_env(raw_env):
     return env
 
 
-def greedy_eval_x(model, eval_env):
-    """Returns (max_x, final_score) for a greedy (deterministic) episode."""
+def greedy_eval_x(model, _unused_eval_env=None):
+    """Returns (max_x, final_score) for a greedy (deterministic) episode.
+
+    Creates a fresh environment each call to avoid NES emulator state corruption
+    that occurs when reusing an env across multiple greedy evaluations.
+    """
+    eval_env = wrap_env(make_env(render=False))
     model.eval()
-    state, _ = eval_env.reset()
-    max_x = 0
-    final_score = 0
-    for _ in range(MAX_EPISODE_STEPS):
-        st = torch.FloatTensor(state).unsqueeze(0).to(device) / 255.0
-        with torch.no_grad():
-            action = model(st).max(1)[1].item()
-        state, _, terminated, truncated, info = eval_env.step(action)
-        max_x = max(max_x, info.get('x_pos', 0))
-        final_score = info.get('score', 0)
-        if terminated or truncated:
-            break
-    model.train()
+    try:
+        state, _ = eval_env.reset()
+        max_x = 0
+        final_score = 0
+        for _ in range(MAX_EPISODE_STEPS):
+            st = torch.FloatTensor(state).unsqueeze(0).to(device) / 255.0
+            with torch.no_grad():
+                action = model(st).max(1)[1].item()
+            state, _, terminated, truncated, info = eval_env.step(action)
+            max_x = max(max_x, info.get('x_pos', 0))
+            final_score = info.get('score', 0)
+            if terminated or truncated:
+                break
+    finally:
+        eval_env.close()
+        model.train()
     return max_x, final_score
 
 
 def train():
     envs = [wrap_env(make_env(render=False)) for _ in range(N_WORKERS)]
-    eval_env = wrap_env(make_env(render=False))
     states = [env.reset()[0] for env in envs]
 
     n_actions = envs[0].action_space.n
@@ -209,7 +216,7 @@ def train():
         except Exception as e:
             print(f"Warm start failed ({e}), starting fresh")
 
-    best_greedy_x, best_greedy_score = greedy_eval_x(model, eval_env)
+    best_greedy_x, best_greedy_score = greedy_eval_x(model)
     best_combined = best_greedy_x + best_greedy_score
     print(f"Baseline: x={best_greedy_x} score={best_greedy_score} combined={best_combined}")
 
@@ -341,7 +348,7 @@ def train():
             # If any worker completed the level this rollout, run greedy eval now.
             # (Deferred from inside the step loop to avoid NES emulator crash on Windows)
             if flag_get_this_rollout:
-                gx, gs = greedy_eval_x(model, eval_env)
+                gx, gs = greedy_eval_x(model)
                 combined = gx + gs
                 if combined > best_combined:
                     best_combined = combined
@@ -355,7 +362,7 @@ def train():
 
             # ── Regular greedy checkpoint ─────────────────────────────────────────
             if rollout_count % GREEDY_CHECK_ROLLOUTS == 0:
-                gx, gs = greedy_eval_x(model, eval_env)
+                gx, gs = greedy_eval_x(model)
                 combined = gx + gs
                 if combined > best_combined:
                     best_combined = combined
@@ -381,11 +388,10 @@ def train():
     finally:
         for env in envs:
             env.close()
-        eval_env.close()
         os.makedirs("MODELS", exist_ok=True)
         if not model_saved:
             # No greedy checkpoint saved — check final greedy before writing
-            final_gx, final_gs = greedy_eval_x(model, eval_env)
+            final_gx, final_gs = greedy_eval_x(model)
             final_combined = final_gx + final_gs
             if final_combined >= best_combined:
                 torch.save({k: v.cpu() for k, v in model.state_dict().items()}, "MODELS/model.pt")
