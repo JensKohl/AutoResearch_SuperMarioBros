@@ -30,9 +30,9 @@ TRAIN_START = 10000
 TRAIN_FREQ = 32
 GREEDY_CHECK_INTERVAL = 5000
 
-# Surgical barrier exploration: greedy everywhere, tiny exploration at x=2022+
+# Selective barrier replay: explore at barrier, but ONLY keep successful crossings in buffer
 BARRIER_X_THRESHOLD = 2022
-BARRIER_EPSILON = 0.1   # 10% random at the barrier — minimal contamination
+BARRIER_EPSILON = 0.3   # 30% random at barrier — higher chance of finding the crossing
 BASE_EPSILONS = [0.0] * 8
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -246,8 +246,12 @@ def train():
                 next_state, reward, terminated, truncated, info = envs[i].step(action)
                 done = terminated or truncated
                 ep_reward[i] += reward
-                worker_x[i] = info.get('x_pos', 0)
-                buffer.add(states[i], action, reward, next_state, float(done))
+                new_x = info.get('x_pos', 0)
+                # Selective barrier replay: at barrier, only add transition if it crosses
+                at_barrier = (worker_x[i] >= BARRIER_X_THRESHOLD)
+                if not at_barrier or new_x > BARRIER_X_THRESHOLD:
+                    buffer.add(states[i], action, reward, next_state, float(done))
+                worker_x[i] = new_x
 
                 current_time = info.get('time', 0)
                 current_score = info.get('score', 0)
