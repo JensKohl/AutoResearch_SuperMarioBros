@@ -28,11 +28,11 @@ LR = 1e-5
 TARGET_UPDATE_INTERVAL = 200
 TRAIN_START = 10000
 TRAIN_FREQ = 32
-GREEDY_CHECK_INTERVAL = 2000  # 2.5x more frequent: catch more lucky checkpoints
+GREEDY_CHECK_INTERVAL = 5000
 
-# Exp-91 style, from x=2023 backup: original selective filter, no bonus, eps=1.0 at x=2022
+# Exact exp-91 style: eps=0.3, original filter, no bonus, no score delta
 BARRIER_X_THRESHOLD = 2022
-BARRIER_EPSILON = 1.0
+BARRIER_EPSILON = 0.3  # exp-91 used 0.3 and achieved x=2195 (all-time best)
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 warnings.filterwarnings("ignore")
