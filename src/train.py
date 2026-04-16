@@ -18,16 +18,12 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from src.constants import TIME_BUDGET, MAX_EPISODE_STEPS, PRO_MOVEMENT
 from src.model import PolicyModel
 
-# PPO + KL-anchor hyperparameters (exp144)
-# Strategy: PPO on policy[-1]+value_head only (frozen conv+policy[0]).
-#           KL penalty KL(π||π_ref) to frozen reference model prevents
-#           the policy from drifting away from the exp142 x=898 checkpoint.
-#           Barrier bonus (+750 reward) for first crossing x>899 per episode
-#           incentivizes the jump action. Very frequent checks (every 2 rollouts)
-#           to catch brief improvements before degradation.
+# PPO + KL-anchor hyperparameters (exp145)
+# exp144 KL_COEF=1.0 held x=898 through all checks (no degradation!) but was
+# too anchored to allow any improvement. Reducing to 0.3 to allow barrier learning.
 N_WORKERS = 8
 N_STEPS = 128
-LR = 2e-5              # lower LR — slower degradation
+LR = 2e-5
 MAX_GRAD_NORM = 0.5
 
 # PPO
@@ -36,13 +32,13 @@ ENTROPY_COEF = 0.01
 VALUE_COEF = 0.5
 GAE_GAMMA = 0.99
 GAE_LAMBDA = 0.95
-PPO_EPOCHS = 1             # absolute minimum — fewest updates per rollout
+PPO_EPOCHS = 1
 MINI_BATCH = 256
-GREEDY_CHECK_ROLLOUTS = 2  # very frequent — catch brief improvements
+GREEDY_CHECK_ROLLOUTS = 2
 
 # KL penalty coefficient: penalizes deviation from frozen reference model.
-# KL(π||π_ref) is added to PPO loss. Higher = stronger anchor to x=898 behavior.
-KL_COEF = 1.0
+# Reduced from 1.0 (too strong, blocked all learning) to 0.3.
+KL_COEF = 0.3
 
 # Reward: large bonus for first time crossing x=899 barrier per episode.
 BARRIER_X = 899
