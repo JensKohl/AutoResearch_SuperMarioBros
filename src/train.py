@@ -24,19 +24,18 @@ N_WORKERS = 8
 N_STEPS = 128           # env steps per worker before each PPO update
 N_EPOCHS = 4            # PPO gradient epochs per rollout
 MINI_BATCH_SIZE = 256   # mini-batch size within each epoch
-LR = 5e-5               # lower LR for stable convergence from PPO warm start
+LR = 1e-5               # very low LR: preserve x=898 baseline, small careful updates
 GAMMA = 0.99
 GAE_LAMBDA = 0.95
 CLIP_EPS = 0.1
-ENT_COEF_START = 0.02   # high initial entropy → workers explore and complete level early → BC fills
-ENT_COEF_END = 0.0      # anneal to 0: policy becomes near-greedy by end, BC has anchored good behavior
+ENT_COEF = 0.001        # constant low entropy: preserve x=898 baseline, enough randomness for completions
 VF_COEF = 0.5           # value loss coefficient
 MAX_GRAD_NORM = 0.5
 GREEDY_CHECK_ROLLOUTS = 8   # run greedy eval every N rollouts
 
 # Behavioral Cloning from successful episodes (flag_get=True)
-BC_COEF = 0.3           # BC loss weight — lower than 1.0 to avoid destabilizing the policy
-BC_UPDATES_PER_ROLLOUT = 8
+BC_COEF = 0.2           # gentle BC: preserve PPO-learned behavior while slowly nudging toward completions
+BC_UPDATES_PER_ROLLOUT = 2
 BC_BATCH_SIZE = 128
 BC_BUFFER_MAX = 20000   # max (s, a) pairs stored from successful episodes
 
@@ -369,9 +368,7 @@ def train():
                     surr2 = torch.clamp(ratio, 1.0 - CLIP_EPS, 1.0 + CLIP_EPS) * adv
                     policy_loss = -torch.min(surr1, surr2).mean()
                     value_loss = nn.MSELoss()(values.squeeze(-1), ret)
-                    elapsed_frac = min(1.0, (time.time() - start_time) / TIME_BUDGET)
-                    ent_coef = ENT_COEF_START * (1.0 - elapsed_frac) + ENT_COEF_END * elapsed_frac
-                    loss = policy_loss + VF_COEF * value_loss - ent_coef * entropy
+                    loss = policy_loss + VF_COEF * value_loss - ENT_COEF * entropy
 
                     optimizer.zero_grad()
                     loss.backward()
