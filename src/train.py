@@ -6,12 +6,11 @@ import shimmy
 import gymnasium as gym
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 import torch.optim as optim
 import numpy as np
 import cv2
 import os
-import random
-from collections import deque
 import sys
 import warnings
 
@@ -19,35 +18,31 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from src.constants import TIME_BUDGET, MAX_EPISODE_STEPS, PRO_MOVEMENT
 from src.model import PolicyModel
 
-# Beyond-head + BC hyperparameters (exp141)
-# Strategy: freeze policy[-1] entirely. Train only beyond_head (a separate Linear(512,n_actions)
-#           initialized to zero) via BC from x>=900 episodes. Policy[-1] can never degrade.
-#           Regularize beyond_head to stay near-zero for ALL x<900 states (covers full pre-barrier path).
+# PPO + barrier bonus hyperparameters (exp142)
+# Strategy: PPO on policy[-1]+value_head only (frozen conv+policy[0]).
+#           Barrier bonus (+500 reward) for first time x>899 per episode creates
+#           a large positive advantage for jumping over the pipe, overcoming
+#           the usual PPO degradation at x=899.
 N_WORKERS = 8
 N_STEPS = 128
-LR = 1e-4               # optimizer LR (beyond_head only)
+LR = 5e-5
 MAX_GRAD_NORM = 0.5
 GREEDY_CHECK_ROLLOUTS = 8
 
-# Epsilon-greedy exploration for workers
-EPS_EXPLORE = 0.40      # 40% random actions — sufficient for x>900 episodes
+# PPO
+CLIP_EPS = 0.15
+ENTROPY_COEF = 0.01
+VALUE_COEF = 0.5
+GAE_GAMMA = 0.99
+GAE_LAMBDA = 0.95
+PPO_EPOCHS = 4
+MINI_BATCH = 256
 
-# Regularization: force beyond_head near-zero for x < BEYOND_THRESHOLD states.
-# Must cover full pre-barrier region (x<900) so BC can't corrupt x=600-899 path.
-# Exp140 bug: BEYOND_THRESHOLD=600 left x=600-899 unprotected → greedy degraded to x=327.
-BEYOND_THRESHOLD = 900
-REG_COEF = 5.0          # stronger regularization to dominate BC drift on pre-barrier states
-REG_BUFFER_MAX = 5000
-
-# BC collects from any episode where max_x >= BC_X_THRESHOLD
-BC_X_THRESHOLD = 900
-
-# Behavioral Cloning from episodes reaching x >= BC_X_THRESHOLD
-BC_COEF = 3.0
-BC_UPDATES_PER_ROLLOUT = 8
-BC_X_WINDOW = 2000      # keep samples from x in [BC_X_THRESHOLD, BC_X_THRESHOLD + 2000]
-BC_BATCH_SIZE = 128
-BC_BUFFER_MAX = 20000
+# Reward: large bonus for first time crossing x=899 barrier per episode.
+# This makes the PPO advantage estimate very large for the jump action at x=899,
+# overcoming the many small negative advantages from failed attempts.
+BARRIER_X = 899
+BARRIER_BONUS = 500.0
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 warnings.filterwarnings("ignore")
@@ -104,7 +99,7 @@ class FrameStack(gym.Wrapper):
     def __init__(self, env, k=4):
         super().__init__(env)
         self.k = k
-        self.frames = deque([], maxlen=k)
+        self.frames = []
         shp = env.observation_space.shape
         self.observation_space = gym.spaces.Box(
             low=0, high=255, shape=(shp[0] * k, shp[1], shp[2]), dtype=np.uint8
@@ -112,26 +107,30 @@ class FrameStack(gym.Wrapper):
 
     def reset(self, **kwargs):
         obs, info = self.env.reset(**kwargs)
-        for _ in range(self.k):
-            self.frames.append(obs)
+        self.frames = [obs] * self.k
         return self._get_ob(), info
 
     def step(self, action):
         obs, reward, terminated, truncated, info = self.env.step(action)
+        self.frames.pop(0)
         self.frames.append(obs)
         return self._get_ob(), reward, terminated, truncated, info
 
     def _get_ob(self):
-        return np.concatenate(list(self.frames), axis=0)
+        return np.concatenate(self.frames, axis=0)
 
 
 class DistanceReward(gym.Wrapper):
-    def __init__(self, env):
+    """Distance-based reward with barrier bonus for first crossing x=BARRIER_X."""
+    def __init__(self, env, barrier_bonus=0.0):
         super().__init__(env)
         self.curr_x = 0
+        self.barrier_crossed = False
+        self.barrier_bonus = barrier_bonus
 
     def reset(self, **kwargs):
         self.curr_x = 0
+        self.barrier_crossed = False
         return self.env.reset(**kwargs)
 
     def step(self, action):
@@ -140,6 +139,9 @@ class DistanceReward(gym.Wrapper):
         reward += (x_pos - self.curr_x) * 2.0
         self.curr_x = x_pos
         reward -= 0.1
+        if self.barrier_bonus > 0 and x_pos > BARRIER_X and not self.barrier_crossed:
+            reward += self.barrier_bonus
+            self.barrier_crossed = True
         if info.get('flag_get', False):
             reward += 1000.0
         return obs, reward, terminated, truncated, info
@@ -167,9 +169,9 @@ class FrameSkip(gym.Wrapper):
         return obs, total_reward, terminated, truncated, info
 
 
-def wrap_env(raw_env):
+def wrap_env(raw_env, barrier_bonus=0.0):
     env = FrameSkip(raw_env, skip=3)
-    env = DistanceReward(env)
+    env = DistanceReward(env, barrier_bonus=barrier_bonus)
     env = PreprocessFrame(env)
     env = EnsureChannelFirst(env)
     env = FrameStack(env, k=4)
@@ -177,11 +179,7 @@ def wrap_env(raw_env):
 
 
 def greedy_eval_x(model, _unused_eval_env=None):
-    """Returns (max_x, final_score) for a greedy (deterministic) episode.
-
-    Creates a fresh environment each call to avoid NES emulator state corruption
-    that occurs when reusing an env across multiple greedy evaluations.
-    """
+    """Returns (max_x, final_score) for a greedy (deterministic) episode."""
     eval_env = wrap_env(make_env(render=False))
     model.eval()
     try:
@@ -204,15 +202,24 @@ def greedy_eval_x(model, _unused_eval_env=None):
 
 
 def train():
-    envs = [wrap_env(make_env(render=False)) for _ in range(N_WORKERS)]
+    envs = [wrap_env(make_env(render=False), barrier_bonus=BARRIER_BONUS) for _ in range(N_WORKERS)]
     states = [env.reset()[0] for env in envs]
 
     n_actions = envs[0].action_space.n
     model = PolicyModel(n_actions).to(device)
-    # Exp 140: only train beyond_head (residual Linear 512→n_actions, initialized to zero).
-    # policy[-1] is completely frozen — early-game behavior can never degrade.
-    # beyond_head learns residual corrections for x>=900 states via BC.
-    optimizer = optim.Adam(model.beyond_head.parameters(), lr=LR, eps=1e-5)
+
+    # Freeze conv and policy[0] — only train policy[-1] and value_head.
+    # This minimizes early-game feature degradation while allowing the output
+    # layer to learn to prefer jumping at x=899.
+    for p in model.conv.parameters():
+        p.requires_grad = False
+    for p in model.policy[:2].parameters():
+        p.requires_grad = False
+    for p in model.beyond_head.parameters():
+        p.requires_grad = False
+
+    trainable = list(model.policy[-1].parameters()) + list(model.value_head.parameters())
+    optimizer = optim.Adam(trainable, lr=LR, eps=1e-5)
 
     model_path = "MODELS/model.pt"
     model_saved = False
@@ -220,7 +227,6 @@ def train():
         try:
             saved = torch.load(model_path, map_location=device)
             if any(k.startswith('policy.') for k in saved):
-                # strict=False: model.pt may lack beyond_head keys (stays zero-initialized)
                 model.load_state_dict(saved, strict=False)
                 print(f"Warm start: loaded full PPO model from {model_path}")
             else:
@@ -244,23 +250,15 @@ def train():
     best_score = 0
     best_time = 0
 
-    # BC buffer: (state, action) from any episode reaching x >= BC_X_THRESHOLD
-    bc_states = deque(maxlen=BC_BUFFER_MAX)
-    bc_actions = deque(maxlen=BC_BUFFER_MAX)
-    worker_ep_states = [[] for _ in range(N_WORKERS)]
-    worker_ep_actions = [[] for _ in range(N_WORKERS)]
-    worker_ep_xpos = [[] for _ in range(N_WORKERS)]
-    worker_flag_get = [False] * N_WORKERS
-    bc_episodes_total = 0
-
-    # Regularization buffer: early-game states (x < BEYOND_THRESHOLD) used to penalize
-    # beyond_head for being non-zero on states where it should stay at zero.
-    reg_states = deque(maxlen=REG_BUFFER_MAX)
-    worker_current_x = [0] * N_WORKERS
-
     try:
         while time.time() - start_time < TIME_BUDGET:
-            flag_get_this_rollout = False
+            # ── Collect rollout ──────────────────────────────────────────────────
+            states_buf = []
+            actions_buf = []
+            log_probs_buf = []
+            rewards_buf = []
+            dones_buf = []
+            values_buf = []
 
             for step in range(N_STEPS):
                 states_t = torch.FloatTensor(
@@ -268,34 +266,27 @@ def train():
                 ).to(device)
 
                 with torch.no_grad():
-                    logits = model(states_t)
-                act_list = []
-                for wi in range(N_WORKERS):
-                    if random.random() < EPS_EXPLORE:
-                        act_list.append(random.randrange(n_actions))
-                    else:
-                        act_list.append(logits[wi].argmax().item())
-                actions = torch.tensor(act_list, device=device)
+                    logits, values = model.full_forward(states_t)
+                    probs = torch.softmax(logits, dim=1)
+                    dist = torch.distributions.Categorical(probs)
+                    actions = dist.sample()
+                    log_probs = dist.log_prob(actions)
+
+                states_buf.append(states_t.cpu())
+                actions_buf.append(actions.cpu())
+                log_probs_buf.append(log_probs.cpu())
+                values_buf.append(values.squeeze(1).cpu())
 
                 next_states = []
+                rewards_step = []
+                dones_step = []
 
                 for i in range(N_WORKERS):
                     ns, r, term, trunc, info = envs[i].step(actions[i].item())
                     done = term or trunc
                     ep_rewards[i] += r
-                    x_pos = info.get('x_pos', 0)
-                    worker_current_x[i] = x_pos
-
-                    # Regularization buffer: early-game states where beyond_head must stay near zero
-                    if x_pos < BEYOND_THRESHOLD:
-                        reg_states.append((states_t[i].cpu() * 255).byte())
-
-                    # Track episode for BC
-                    worker_ep_states[i].append((states_t[i].cpu() * 255).byte())
-                    worker_ep_actions[i].append(actions[i].cpu())
-                    worker_ep_xpos[i].append(x_pos)
-                    if info.get('flag_get', False):
-                        worker_flag_get[i] = True
+                    rewards_step.append(r)
+                    dones_step.append(float(done))
 
                     ct = info.get('time', 0) + info.get('score', 0)
                     if ct > best_total_reward:
@@ -306,80 +297,68 @@ def train():
                     if done:
                         total_ep_rewards.append(ep_rewards[i])
                         ep_rewards[i] = 0.0
-                        # BC from any episode that passed the barrier (not just flag_get)
-                        ep_max_x = max(worker_ep_xpos[i]) if worker_ep_xpos[i] else 0
-                        if ep_max_x >= BC_X_THRESHOLD:
-                            x_lo = BC_X_THRESHOLD
-                            x_hi = BC_X_THRESHOLD + BC_X_WINDOW
-                            n_added = 0
-                            for s, a, xp in zip(worker_ep_states[i], worker_ep_actions[i], worker_ep_xpos[i]):
-                                if x_lo <= xp <= x_hi:
-                                    bc_states.append(s)
-                                    bc_actions.append(a)
-                                    n_added += 1
-                            if n_added > 0:
-                                bc_episodes_total += 1
-                                print(f"  BC: ep {bc_episodes_total} added ({n_added}/{len(worker_ep_states[i])} steps, x=[{x_lo},{x_hi}], buf={len(bc_states)})")
-                        if worker_flag_get[i]:
-                            flag_get_this_rollout = True  # trigger extra greedy check on level completion
-                        worker_ep_states[i] = []
-                        worker_ep_actions[i] = []
-                        worker_ep_xpos[i] = []
-                        worker_flag_get[i] = False
-                        worker_current_x[i] = 0
                         ns = envs[i].reset()[0]
                     next_states.append(ns)
 
+                rewards_buf.append(torch.tensor(rewards_step, dtype=torch.float32))
+                dones_buf.append(torch.tensor(dones_step, dtype=torch.float32))
                 states = next_states
 
-            # ── Beyond-head update ──────────────────────────────────────────────────
-            # policy[-1] is FROZEN — early-game behavior can never degrade.
-            # beyond_head learns residual corrections for x>=900 states via BC.
-            # Regularization forces beyond_head near-zero for x<600 states (no early-game corruption).
-            has_reg = len(reg_states) >= BC_BATCH_SIZE
-            has_bc = len(bc_states) >= BC_BATCH_SIZE
+            # ── GAE ──────────────────────────────────────────────────────────────
+            with torch.no_grad():
+                last_states_t = torch.FloatTensor(
+                    np.array(states, dtype=np.float32) / 255.0
+                ).to(device)
+                _, last_vals = model.full_forward(last_states_t)
+                last_vals = last_vals.squeeze(1).cpu()
 
-            if has_reg or has_bc:
-                for _ in range(BC_UPDATES_PER_ROLLOUT):
-                    total_loss = torch.tensor(0.0, device=device)
+            advantages = torch.zeros(N_STEPS, N_WORKERS)
+            gae = torch.zeros(N_WORKERS)
+            for t in reversed(range(N_STEPS)):
+                next_v = last_vals if t == N_STEPS - 1 else values_buf[t + 1]
+                delta = rewards_buf[t] + GAE_GAMMA * next_v * (1 - dones_buf[t]) - values_buf[t]
+                gae = delta + GAE_GAMMA * GAE_LAMBDA * (1 - dones_buf[t]) * gae
+                advantages[t] = gae
+            returns = advantages + torch.stack(values_buf, dim=0)
 
-                    if has_reg:
-                        r_idx = random.sample(range(len(reg_states)), min(BC_BATCH_SIZE, len(reg_states)))
-                        r_s = torch.stack([reg_states[i] for i in r_idx]).to(device).float() / 255.0
-                        # beyond_head(features) must stay near zero for early-game states
-                        r_f = model.conv(r_s).view(r_s.size(0), -1)
-                        r_features = model.policy[:2](r_f)
-                        reg_logits = model.beyond_head(r_features)
-                        reg_loss = (reg_logits ** 2).mean()
-                        total_loss = total_loss + REG_COEF * reg_loss
+            # Flatten and normalize advantages
+            S = torch.stack(states_buf).view(-1, *states_buf[0].shape[1:])
+            A = torch.stack(actions_buf).view(-1)
+            LP = torch.stack(log_probs_buf).view(-1)
+            ADV = advantages.view(-1)
+            RET = returns.view(-1)
+            ADV = (ADV - ADV.mean()) / (ADV.std() + 1e-8)
 
-                    if has_bc:
-                        bc_idx = random.sample(range(len(bc_states)), BC_BATCH_SIZE)
-                        bc_s = torch.stack([bc_states[i] for i in bc_idx]).to(device).float() / 255.0
-                        bc_a = torch.stack([bc_actions[i] for i in bc_idx]).to(device)
-                        bc_logits = model(bc_s)   # policy[-1](f) + beyond_head(f)
-                        bc_loss = nn.CrossEntropyLoss()(bc_logits, bc_a)
-                        total_loss = total_loss + BC_COEF * bc_loss
+            # ── PPO update ───────────────────────────────────────────────────────
+            n = len(S)
+            for _ in range(PPO_EPOCHS):
+                idx = torch.randperm(n)
+                for start in range(0, n, MINI_BATCH):
+                    mb = idx[start:start + MINI_BATCH]
+                    mb_s = S[mb].to(device)
+                    mb_a = A[mb].to(device)
+                    mb_lp = LP[mb].to(device)
+                    mb_adv = ADV[mb].to(device)
+                    mb_ret = RET[mb].to(device)
+
+                    logits, vals = model.full_forward(mb_s)
+                    dist = torch.distributions.Categorical(torch.softmax(logits, dim=1))
+                    new_lp = dist.log_prob(mb_a)
+                    entropy = dist.entropy().mean()
+
+                    ratio = torch.exp(new_lp - mb_lp)
+                    surr1 = ratio * mb_adv
+                    surr2 = torch.clamp(ratio, 1 - CLIP_EPS, 1 + CLIP_EPS) * mb_adv
+                    policy_loss = -torch.min(surr1, surr2).mean()
+                    value_loss = VALUE_COEF * F.mse_loss(vals.squeeze(1), mb_ret)
+                    loss = policy_loss + value_loss - ENTROPY_COEF * entropy
 
                     optimizer.zero_grad()
-                    total_loss.backward()
-                    nn.utils.clip_grad_norm_(model.beyond_head.parameters(), MAX_GRAD_NORM)
+                    loss.backward()
+                    nn.utils.clip_grad_norm_(trainable, MAX_GRAD_NORM)
                     optimizer.step()
 
             rollout_count += 1
-
-            if flag_get_this_rollout:
-                gx, gs = greedy_eval_x(model)
-                combined = gx + gs
-                if combined > best_combined:
-                    best_combined = combined
-                    best_greedy_x, best_greedy_score = gx, gs
-                    model_saved = True
-                    os.makedirs("MODELS", exist_ok=True)
-                    torch.save({k: v.cpu() for k, v in model.state_dict().items()}, "MODELS/model.pt")
-                    print(f"  FLAG GET checkpoint: greedy x={gx} score={gs} combined={combined} (saved)")
-                else:
-                    print(f"  FLAG GET (rollout): greedy x={gx} score={gs} combined={combined} (best={best_combined})")
 
             if rollout_count % GREEDY_CHECK_ROLLOUTS == 0:
                 gx, gs = greedy_eval_x(model)
