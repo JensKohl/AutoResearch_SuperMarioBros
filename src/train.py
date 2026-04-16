@@ -6,6 +6,7 @@ import shimmy
 import gymnasium as gym
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 import torch.optim as optim
 import numpy as np
 import cv2
@@ -19,23 +20,32 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from src.constants import TIME_BUDGET, MAX_EPISODE_STEPS, PRO_MOVEMENT
 from src.model import PolicyModel
 
-# BC-only hyperparameters (no PPO — only BC from successful completions)
+# Distillation + BC hyperparameters
+# Strategy: protect early-game (x<900) via distillation from a frozen reference model,
+#           teach late-game (x>=900) via BC from completion episodes.
 N_WORKERS = 8
-N_STEPS = 128           # env steps per worker per rollout (used for data collection)
-LR_BC = 2e-4            # BC optimizer LR — final output layer only (512→n_actions)
+N_STEPS = 128
+LR = 1e-4               # optimizer LR (policy[-1] only)
 MAX_GRAD_NORM = 0.5
-GREEDY_CHECK_ROLLOUTS = 8   # run greedy eval every N rollouts
+GREEDY_CHECK_ROLLOUTS = 8
 
-# Epsilon-greedy exploration for workers (replaces PPO's stochastic sampling)
-# Without PPO entropy, workers need explicit exploration to generate completion episodes.
-EPS_EXPLORE = 0.15      # 15% random actions — enough to explore past x=899 barrier
+# Epsilon-greedy exploration for workers
+EPS_EXPLORE = 0.30      # 30% random actions — more completions than exp137 (was 15%)
 
-# Behavioral Cloning from successful episodes (flag_get=True)
-BC_COEF = 5.0           # Strong BC: only updating the final linear layer (512→n_actions), can be aggressive
-BC_UPDATES_PER_ROLLOUT = 16  # More updates per completion since no PPO to compete with
-BC_X_WINDOW = 2000      # keep all samples from x >= best_greedy_x
+BEYOND_THRESHOLD = 900  # x position where beyond-barrier behavior kicks in
+
+# Distillation: force model to match reference (frozen original) on early-game states (x < BEYOND_THRESHOLD)
+# This counteracts BC's tendency to corrupt early-game behavior by fixing the linear output
+# for early-game feature vectors.
+DISTILL_COEF = 5.0      # strong distillation — preserves x<900 behavior
+DISTILL_BUFFER_MAX = 5000
+
+# Behavioral Cloning from completion episodes (flag_get=True), x >= BEYOND_THRESHOLD only
+BC_COEF = 3.0
+BC_UPDATES_PER_ROLLOUT = 8
+BC_X_WINDOW = 2000      # keep samples from x in [best_greedy_x, best_greedy_x + 2000]
 BC_BATCH_SIZE = 128
-BC_BUFFER_MAX = 20000   # max (s, a) pairs stored from successful episodes
+BC_BUFFER_MAX = 20000
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 warnings.filterwarnings("ignore")
@@ -197,35 +207,34 @@ def train():
 
     n_actions = envs[0].action_space.n
     model = PolicyModel(n_actions).to(device)
-    # Exp 137: NO PPO optimizer — only BC from completions.
-    # BC optimizer: only the final action output layer (policy[-1] = Linear 512→n_actions).
-    bc_optimizer = optim.Adam(model.policy[-1].parameters(), lr=LR_BC, eps=1e-5)
+    # Exp 138: only train policy[-1] (the final Linear 512→n_actions layer).
+    # Distillation counteracts early-game degradation; BC trains beyond-barrier behavior.
+    optimizer = optim.Adam(model.policy[-1].parameters(), lr=LR, eps=1e-5)
 
-    # Warm start: load CNN weights from the saved DQN checkpoint.
-    # The DQN used 'advantage.*' for action scores and 'value.*' for state value.
-    # We map those to PPO's 'policy.*' and 'value_head.*'. Only the CNN layers
-    # transfer cleanly (same architecture). The FC policy head gets fresh orthogonal
-    # init (set in model.py), so we only copy conv.* from the checkpoint.
     model_path = "MODELS/model.pt"
     model_saved = False
     if os.path.exists(model_path):
         try:
             saved = torch.load(model_path, map_location=device)
             if any(k.startswith('policy.') for k in saved):
-                # PPO format checkpoint: load all weights and continue training
                 model.load_state_dict(saved)
                 print(f"Warm start: loaded full PPO model from {model_path}")
             else:
-                # DQN format checkpoint: copy only conv layers (FC heads have wrong scale)
                 model_dict = model.state_dict()
                 conv_weights = {k: v for k, v in saved.items() if k.startswith('conv.')}
                 model_dict.update(conv_weights)
                 model.load_state_dict(model_dict)
                 print(f"Warm start: loaded CNN from DQN checkpoint, fresh policy/value heads")
-            # NOTE: do NOT set model_saved=True here — loading != saving a PPO model.
-            # The finally block must always write a valid PPO-format model.pt.
         except Exception as e:
             print(f"Warm start failed ({e}), starting fresh")
+
+    # Frozen reference model: copy of the loaded model (never updated).
+    # Used for distillation loss to preserve early-game (x < BEYOND_THRESHOLD) behavior.
+    ref_model = PolicyModel(n_actions).to(device)
+    ref_model.load_state_dict(model.state_dict())
+    for p in ref_model.parameters():
+        p.requires_grad = False
+    ref_model.eval()
 
     best_greedy_x, best_greedy_score = greedy_eval_x(model)
     best_combined = best_greedy_x + best_greedy_score
@@ -239,19 +248,23 @@ def train():
     best_score = 0
     best_time = 0
 
-    # BC buffer: stores (uint8 state, action) pairs from episodes where flag_get=True
-    # Only keeps samples from x in [best_greedy_x-200, best_greedy_x+BC_X_WINDOW]
-    bc_states = deque(maxlen=BC_BUFFER_MAX)  # uint8 to save memory
+    # BC buffer: (state, action) from completion episodes, x in [best_greedy_x, best_greedy_x+BC_X_WINDOW]
+    bc_states = deque(maxlen=BC_BUFFER_MAX)
     bc_actions = deque(maxlen=BC_BUFFER_MAX)
-    worker_ep_states = [[] for _ in range(N_WORKERS)]   # per-worker current episode states
-    worker_ep_actions = [[] for _ in range(N_WORKERS)]  # per-worker current episode actions
-    worker_ep_xpos = [[] for _ in range(N_WORKERS)]     # per-worker x_pos for targeted BC
-    worker_flag_get = [False] * N_WORKERS  # flag_get may appear before done; track per episode
+    worker_ep_states = [[] for _ in range(N_WORKERS)]
+    worker_ep_actions = [[] for _ in range(N_WORKERS)]
+    worker_ep_xpos = [[] for _ in range(N_WORKERS)]
+    worker_flag_get = [False] * N_WORKERS
     bc_episodes_total = 0
+
+    # Distillation buffer: states from worker steps where x < BEYOND_THRESHOLD.
+    # Used to force model to match ref_model on early-game states (prevent early-game degradation).
+    distill_states = deque(maxlen=DISTILL_BUFFER_MAX)
+    # Track current x_pos per worker (for distill buffer and beyond-barrier routing)
+    worker_current_x = [0] * N_WORKERS
 
     try:
         while time.time() - start_time < TIME_BUDGET:
-            # ── Collect rollout ──────────────────────────────────────────────────
             flag_get_this_rollout = False
 
             for step in range(N_STEPS):
@@ -259,9 +272,6 @@ def train():
                     np.array(states, dtype=np.float32) / 255.0
                 ).to(device)
 
-                # Epsilon-greedy: EPS_EXPLORE chance of random action, else argmax.
-                # No PPO training, so we need explicit exploration for workers to
-                # generate completion episodes that feed the BC buffer.
                 with torch.no_grad():
                     logits = model(states_t)
                 act_list = []
@@ -278,12 +288,17 @@ def train():
                     ns, r, term, trunc, info = envs[i].step(actions[i].item())
                     done = term or trunc
                     ep_rewards[i] += r
+                    x_pos = info.get('x_pos', 0)
+                    worker_current_x[i] = x_pos
 
-                    # Track per-worker episode for BC
+                    # Distillation buffer: keep early-game states (before the barrier)
+                    if x_pos < BEYOND_THRESHOLD:
+                        distill_states.append((states_t[i].cpu() * 255).byte())
+
+                    # Track episode for BC
                     worker_ep_states[i].append((states_t[i].cpu() * 255).byte())
                     worker_ep_actions[i].append(actions[i].cpu())
-                    worker_ep_xpos[i].append(info.get('x_pos', 0))
-                    # flag_get can appear before done (during victory animation), so track per episode
+                    worker_ep_xpos[i].append(x_pos)
                     if info.get('flag_get', False):
                         worker_flag_get[i] = True
 
@@ -297,10 +312,6 @@ def train():
                         total_ep_rewards.append(ep_rewards[i])
                         ep_rewards[i] = 0.0
                         if worker_flag_get[i]:
-                            # Beyond-barrier BC: only keep samples AFTER the greedy barrier.
-                            # States before x=best_greedy_x are already mastered by greedy — only
-                            # states beyond teach new behavior. This prevents ANY interference with
-                            # early-game states (the greedy policy has never visited x > best_greedy_x).
                             x_lo = best_greedy_x
                             x_hi = best_greedy_x + BC_X_WINDOW
                             n_added = 0
@@ -317,35 +328,50 @@ def train():
                         worker_ep_actions[i] = []
                         worker_ep_xpos[i] = []
                         worker_flag_get[i] = False
+                        worker_current_x[i] = 0
                         ns = envs[i].reset()[0]
                     next_states.append(ns)
 
                 states = next_states
-            # (No PPO update — model only changes via BC below)
 
-            # ── Behavioral Cloning from successful episodes ──────────────────────
-            if len(bc_states) >= BC_BATCH_SIZE:
+            # ── Combined Distillation + BC update ──────────────────────────────────
+            # Distillation: model(early_states) must match ref_model(early_states) — prevents early-game degradation.
+            # BC: model(late_states) must produce completion actions — teaches beyond-barrier behavior.
+            # Only policy[-1] (Linear 512→n_actions) is updated.
+            has_distill = len(distill_states) >= BC_BATCH_SIZE
+            has_bc = len(bc_states) >= BC_BATCH_SIZE
+
+            if has_distill or has_bc:
                 for _ in range(BC_UPDATES_PER_ROLLOUT):
-                    bc_idx = random.sample(range(len(bc_states)), BC_BATCH_SIZE)
-                    bc_s = torch.stack([bc_states[i] for i in bc_idx]).to(device).float() / 255.0
-                    bc_a = torch.stack([bc_actions[i] for i in bc_idx]).to(device)
-                    bc_logits, _ = model.full_forward(bc_s)
-                    # Entropy-weighted BC: down-weight states the policy is already confident about
-                    with torch.no_grad():
-                        bc_probs = torch.softmax(bc_logits, dim=1)
-                        bc_h = -(bc_probs * torch.log(bc_probs + 1e-8)).sum(dim=1)
-                        bc_w = bc_h / (bc_h.mean() + 1e-8)  # normalize: mean weight = 1
-                    bc_loss = (nn.CrossEntropyLoss(reduction='none')(bc_logits, bc_a) * bc_w).mean()
-                    bc_optimizer.zero_grad()
-                    (BC_COEF * bc_loss).backward()
+                    total_loss = torch.tensor(0.0, device=device)
+
+                    if has_distill:
+                        d_idx = random.sample(range(len(distill_states)), min(BC_BATCH_SIZE, len(distill_states)))
+                        d_s = torch.stack([distill_states[i] for i in d_idx]).to(device).float() / 255.0
+                        new_logits = model(d_s)
+                        with torch.no_grad():
+                            ref_logits = ref_model(d_s)
+                            ref_probs = torch.softmax(ref_logits, dim=1)
+                        new_log_probs = F.log_softmax(new_logits, dim=1)
+                        # KL divergence: force model to match ref_model on early-game states
+                        distill_loss = -(ref_probs * new_log_probs).sum(dim=1).mean()
+                        total_loss = total_loss + DISTILL_COEF * distill_loss
+
+                    if has_bc:
+                        bc_idx = random.sample(range(len(bc_states)), BC_BATCH_SIZE)
+                        bc_s = torch.stack([bc_states[i] for i in bc_idx]).to(device).float() / 255.0
+                        bc_a = torch.stack([bc_actions[i] for i in bc_idx]).to(device)
+                        bc_logits = model(bc_s)
+                        bc_loss = nn.CrossEntropyLoss()(bc_logits, bc_a)
+                        total_loss = total_loss + BC_COEF * bc_loss
+
+                    optimizer.zero_grad()
+                    total_loss.backward()
                     nn.utils.clip_grad_norm_(model.policy[-1].parameters(), MAX_GRAD_NORM)
-                    bc_optimizer.step()
+                    optimizer.step()
 
             rollout_count += 1
 
-            # ── Post-rollout flag_get checkpoint ─────────────────────────────────
-            # If any worker completed the level this rollout, run greedy eval now.
-            # (Deferred from inside the step loop to avoid NES emulator crash on Windows)
             if flag_get_this_rollout:
                 gx, gs = greedy_eval_x(model)
                 combined = gx + gs
@@ -359,7 +385,6 @@ def train():
                 else:
                     print(f"  FLAG GET (rollout): greedy x={gx} score={gs} combined={combined} (best={best_combined})")
 
-            # ── Regular greedy checkpoint ─────────────────────────────────────────
             if rollout_count % GREEDY_CHECK_ROLLOUTS == 0:
                 gx, gs = greedy_eval_x(model)
                 combined = gx + gs
@@ -389,7 +414,6 @@ def train():
             env.close()
         os.makedirs("MODELS", exist_ok=True)
         if not model_saved:
-            # No greedy checkpoint saved — check final greedy before writing
             final_gx, final_gs = greedy_eval_x(model)
             final_combined = final_gx + final_gs
             if final_combined >= best_combined:
