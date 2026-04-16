@@ -27,22 +27,22 @@ N_WORKERS = 8
 N_STEPS = 128
 LR = 5e-5
 MAX_GRAD_NORM = 0.5
-GREEDY_CHECK_ROLLOUTS = 8
 
 # PPO
-CLIP_EPS = 0.15
+CLIP_EPS = 0.10            # conservative trust region (was 0.15) — slower but less degradation
 ENTROPY_COEF = 0.01
 VALUE_COEF = 0.5
 GAE_GAMMA = 0.99
 GAE_LAMBDA = 0.95
-PPO_EPOCHS = 4
+PPO_EPOCHS = 2             # halved (was 4) — fewer updates per rollout to slow degradation
 MINI_BATCH = 256
+GREEDY_CHECK_ROLLOUTS = 4  # check twice as often (was 8) — catch improvements earlier
 
 # Reward: large bonus for first time crossing x=899 barrier per episode.
 # This makes the PPO advantage estimate very large for the jump action at x=899,
 # overcoming the many small negative advantages from failed attempts.
 BARRIER_X = 899
-BARRIER_BONUS = 500.0
+BARRIER_BONUS = 750.0      # slightly higher (was 500) — push past x=899
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 warnings.filterwarnings("ignore")
