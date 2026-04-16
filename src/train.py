@@ -25,7 +25,7 @@ N_STEPS = 128           # env steps per worker before each PPO update
 N_EPOCHS = 4            # PPO gradient epochs per rollout
 MINI_BATCH_SIZE = 256   # mini-batch size within each epoch
 LR = 1e-5               # PPO optimizer LR — low to preserve x=898 baseline
-LR_BC = 5e-5            # BC optimizer LR — can be higher since only updates policy head
+LR_BC = 2e-4            # BC optimizer LR — higher since only the final output layer (512→n_actions) is updated
 GAMMA = 0.99
 GAE_LAMBDA = 0.95
 CLIP_EPS = 0.1
@@ -35,9 +35,9 @@ MAX_GRAD_NORM = 0.5
 GREEDY_CHECK_ROLLOUTS = 8   # run greedy eval every N rollouts
 
 # Behavioral Cloning from successful episodes (flag_get=True)
-BC_COEF = 1.0           # BC loss weight — conv frozen so BC can be aggressive without corrupting early-game
+BC_COEF = 3.0           # BC loss weight — strong since only updating the tiny final linear layer
 BC_UPDATES_PER_ROLLOUT = 8
-BC_X_WINDOW = 500       # only use BC samples from x in [best_greedy_x-200, best_greedy_x+BC_X_WINDOW]
+BC_X_WINDOW = 2000      # wide window: keep all samples from x > best_greedy_x (no upper limit needed)
 BC_BATCH_SIZE = 128
 BC_BUFFER_MAX = 20000   # max (s, a) pairs stored from successful episodes
 
@@ -202,8 +202,10 @@ def train():
     n_actions = envs[0].action_space.n
     model = PolicyModel(n_actions).to(device)
     optimizer = optim.Adam(model.parameters(), lr=LR, eps=1e-5)
-    # Separate BC optimizer: only updates policy FC head (conv features frozen during BC)
-    bc_optimizer = optim.Adam(model.policy.parameters(), lr=LR_BC, eps=1e-5)
+    # Separate BC optimizer: only updates the final output layer (policy[-1] = Linear 512→n_actions).
+    # This is the most surgical possible BC update — only the action-logit mapping changes.
+    # Conv features (3136-dim) and the first FC layer (3136→512) are completely frozen during BC.
+    bc_optimizer = optim.Adam(model.policy[-1].parameters(), lr=LR_BC, eps=1e-5)
 
     # Warm start: load CNN weights from the saved DQN checkpoint.
     # The DQN used 'advantage.*' for action scores and 'value.*' for state value.
@@ -309,8 +311,11 @@ def train():
                         total_ep_rewards.append(ep_rewards[i])
                         ep_rewards[i] = 0.0
                         if worker_flag_get[i]:
-                            # Targeted BC: only keep samples near current stuck point
-                            x_lo = max(0, best_greedy_x - 200)
+                            # Beyond-barrier BC: only keep samples AFTER the greedy barrier.
+                            # States before x=best_greedy_x are already mastered by greedy — only
+                            # states beyond teach new behavior. This prevents ANY interference with
+                            # early-game states (the greedy policy has never visited x > best_greedy_x).
+                            x_lo = best_greedy_x
                             x_hi = best_greedy_x + BC_X_WINDOW
                             n_added = 0
                             for s, a, xp in zip(worker_ep_states[i], worker_ep_actions[i], worker_ep_xpos[i]):
@@ -404,7 +409,7 @@ def train():
                     bc_loss = (nn.CrossEntropyLoss(reduction='none')(bc_logits, bc_a) * bc_w).mean()
                     bc_optimizer.zero_grad()
                     (BC_COEF * bc_loss).backward()
-                    nn.utils.clip_grad_norm_(model.policy.parameters(), MAX_GRAD_NORM)
+                    nn.utils.clip_grad_norm_(model.policy[-1].parameters(), MAX_GRAD_NORM)
                     bc_optimizer.step()
 
             rollout_count += 1
