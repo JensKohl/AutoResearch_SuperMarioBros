@@ -19,25 +19,21 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from src.constants import TIME_BUDGET, MAX_EPISODE_STEPS, PRO_MOVEMENT
 from src.model import PolicyModel
 
-# PPO + BC hyperparameters
+# BC-only hyperparameters (no PPO — only BC from successful completions)
 N_WORKERS = 8
-N_STEPS = 128           # env steps per worker before each PPO update
-N_EPOCHS = 4            # PPO gradient epochs per rollout
-MINI_BATCH_SIZE = 256   # mini-batch size within each epoch
-LR = 5e-5               # PPO optimizer LR — higher OK since conv+policy[0] are frozen (only linear head trained)
+N_STEPS = 128           # env steps per worker per rollout (used for data collection)
 LR_BC = 2e-4            # BC optimizer LR — final output layer only (512→n_actions)
-GAMMA = 0.99
-GAE_LAMBDA = 0.95
-CLIP_EPS = 0.1
-ENT_COEF = 0.001        # constant low entropy: preserve x=898 baseline, enough randomness for completions
-VF_COEF = 0.5           # value loss coefficient
 MAX_GRAD_NORM = 0.5
 GREEDY_CHECK_ROLLOUTS = 8   # run greedy eval every N rollouts
 
+# Epsilon-greedy exploration for workers (replaces PPO's stochastic sampling)
+# Without PPO entropy, workers need explicit exploration to generate completion episodes.
+EPS_EXPLORE = 0.15      # 15% random actions — enough to explore past x=899 barrier
+
 # Behavioral Cloning from successful episodes (flag_get=True)
-BC_COEF = 3.0           # BC loss weight — strong since only updating the tiny final linear layer
-BC_UPDATES_PER_ROLLOUT = 8
-BC_X_WINDOW = 2000      # wide window: keep all samples from x > best_greedy_x (no upper limit needed)
+BC_COEF = 5.0           # Strong BC: only updating the final linear layer (512→n_actions), can be aggressive
+BC_UPDATES_PER_ROLLOUT = 16  # More updates per completion since no PPO to compete with
+BC_X_WINDOW = 2000      # keep all samples from x >= best_greedy_x
 BC_BATCH_SIZE = 128
 BC_BUFFER_MAX = 20000   # max (s, a) pairs stored from successful episodes
 
@@ -201,13 +197,8 @@ def train():
 
     n_actions = envs[0].action_space.n
     model = PolicyModel(n_actions).to(device)
-    # Exp 136: freeze conv + policy[0] completely. Only train policy[-1] (action output) and
-    # value_head (critic). This prevents PPO from degrading the warm-start's feature extraction
-    # that encodes x=899 knowledge, while still allowing the policy to adapt its action selection
-    # and the critic to learn accurate value estimates.
-    trainable_params = list(model.policy[-1].parameters()) + list(model.value_head.parameters())
-    optimizer = optim.Adam(trainable_params, lr=LR, eps=1e-5)
-    # BC optimizer: same target — only the final action output layer.
+    # Exp 137: NO PPO optimizer — only BC from completions.
+    # BC optimizer: only the final action output layer (policy[-1] = Linear 512→n_actions).
     bc_optimizer = optim.Adam(model.policy[-1].parameters(), lr=LR_BC, eps=1e-5)
 
     # Warm start: load CNN weights from the saved DQN checkpoint.
@@ -261,12 +252,6 @@ def train():
     try:
         while time.time() - start_time < TIME_BUDGET:
             # ── Collect rollout ──────────────────────────────────────────────────
-            mb_states = []
-            mb_actions = []
-            mb_log_probs = []
-            mb_values = []
-            mb_rewards = []
-            mb_dones = []
             flag_get_this_rollout = False
 
             for step in range(N_STEPS):
@@ -274,27 +259,25 @@ def train():
                     np.array(states, dtype=np.float32) / 255.0
                 ).to(device)
 
+                # Epsilon-greedy: EPS_EXPLORE chance of random action, else argmax.
+                # No PPO training, so we need explicit exploration for workers to
+                # generate completion episodes that feed the BC buffer.
                 with torch.no_grad():
-                    logits, values = model.full_forward(states_t)
-                    dist = torch.distributions.Categorical(logits=logits)
-                    actions = dist.sample()
-                    log_probs = dist.log_prob(actions)
+                    logits = model(states_t)
+                act_list = []
+                for wi in range(N_WORKERS):
+                    if random.random() < EPS_EXPLORE:
+                        act_list.append(random.randrange(n_actions))
+                    else:
+                        act_list.append(logits[wi].argmax().item())
+                actions = torch.tensor(act_list, device=device)
 
-                mb_states.append(states_t)
-                mb_actions.append(actions)
-                mb_log_probs.append(log_probs)
-                mb_values.append(values.squeeze(-1))
-
-                step_rewards = []
-                step_dones = []
                 next_states = []
 
                 for i in range(N_WORKERS):
                     ns, r, term, trunc, info = envs[i].step(actions[i].item())
                     done = term or trunc
                     ep_rewards[i] += r
-                    step_rewards.append(r)
-                    step_dones.append(float(done))
 
                     # Track per-worker episode for BC
                     worker_ep_states[i].append((states_t[i].cpu() * 255).byte())
@@ -337,65 +320,8 @@ def train():
                         ns = envs[i].reset()[0]
                     next_states.append(ns)
 
-                mb_rewards.append(torch.FloatTensor(step_rewards).to(device))
-                mb_dones.append(torch.FloatTensor(step_dones).to(device))
                 states = next_states
-
-            # ── Compute GAE returns ──────────────────────────────────────────────
-            states_t = torch.FloatTensor(
-                np.array(states, dtype=np.float32) / 255.0
-            ).to(device)
-            with torch.no_grad():
-                _, last_values = model.full_forward(states_t)
-                last_values = last_values.squeeze(-1)
-
-            returns_list = []
-            gae = torch.zeros(N_WORKERS, device=device)
-            for t in reversed(range(N_STEPS)):
-                next_val = last_values if t == N_STEPS - 1 else mb_values[t + 1]
-                delta = mb_rewards[t] + GAMMA * next_val * (1.0 - mb_dones[t]) - mb_values[t]
-                gae = delta + GAMMA * GAE_LAMBDA * (1.0 - mb_dones[t]) * gae
-                returns_list.insert(0, gae + mb_values[t])
-
-            # Flatten to (N_STEPS * N_WORKERS,)
-            all_states = torch.cat(mb_states, dim=0)
-            all_actions = torch.cat(mb_actions, dim=0)
-            all_log_probs = torch.cat(mb_log_probs, dim=0).detach()
-            all_values = torch.cat(mb_values, dim=0).detach()
-            all_returns = torch.stack(returns_list, dim=0).view(-1).detach()
-            all_advantages = all_returns - all_values
-            all_advantages = (all_advantages - all_advantages.mean()) / (all_advantages.std() + 1e-8)
-
-            # ── PPO update ───────────────────────────────────────────────────────
-            batch_size = N_STEPS * N_WORKERS
-            indices = np.arange(batch_size)
-
-            for _ in range(N_EPOCHS):
-                np.random.shuffle(indices)
-                for start in range(0, batch_size, MINI_BATCH_SIZE):
-                    mb_idx = indices[start:start + MINI_BATCH_SIZE]
-                    s = all_states[mb_idx]
-                    a = all_actions[mb_idx]
-                    old_lp = all_log_probs[mb_idx]
-                    adv = all_advantages[mb_idx]
-                    ret = all_returns[mb_idx]
-
-                    logits, values = model.full_forward(s)
-                    dist = torch.distributions.Categorical(logits=logits)
-                    new_lp = dist.log_prob(a)
-                    entropy = dist.entropy().mean()
-
-                    ratio = torch.exp(new_lp - old_lp)
-                    surr1 = ratio * adv
-                    surr2 = torch.clamp(ratio, 1.0 - CLIP_EPS, 1.0 + CLIP_EPS) * adv
-                    policy_loss = -torch.min(surr1, surr2).mean()
-                    value_loss = nn.MSELoss()(values.squeeze(-1), ret)
-                    loss = policy_loss + VF_COEF * value_loss - ENT_COEF * entropy
-
-                    model.zero_grad()   # zero ALL params including frozen ones to prevent gradient accumulation
-                    loss.backward()
-                    nn.utils.clip_grad_norm_(trainable_params, MAX_GRAD_NORM)
-                    optimizer.step()
+            # (No PPO update — model only changes via BC below)
 
             # ── Behavioral Cloning from successful episodes ──────────────────────
             if len(bc_states) >= BC_BATCH_SIZE:
