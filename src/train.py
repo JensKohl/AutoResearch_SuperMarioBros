@@ -385,7 +385,12 @@ def train():
                     bc_s = torch.stack([bc_states[i] for i in bc_idx]).to(device).float() / 255.0
                     bc_a = torch.stack([bc_actions[i] for i in bc_idx]).to(device)
                     bc_logits, _ = model.full_forward(bc_s)
-                    bc_loss = nn.CrossEntropyLoss()(bc_logits, bc_a)
+                    # Entropy-weighted BC: down-weight states the policy is already confident about
+                    with torch.no_grad():
+                        bc_probs = torch.softmax(bc_logits, dim=1)
+                        bc_h = -(bc_probs * torch.log(bc_probs + 1e-8)).sum(dim=1)
+                        bc_w = bc_h / (bc_h.mean() + 1e-8)  # normalize: mean weight = 1
+                    bc_loss = (nn.CrossEntropyLoss(reduction='none')(bc_logits, bc_a) * bc_w).mean()
                     optimizer.zero_grad()
                     (BC_COEF * bc_loss).backward()
                     nn.utils.clip_grad_norm_(model.parameters(), MAX_GRAD_NORM)
