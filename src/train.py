@@ -24,7 +24,7 @@ N_WORKERS = 8
 N_STEPS = 128           # env steps per worker before each PPO update
 N_EPOCHS = 4            # PPO gradient epochs per rollout
 MINI_BATCH_SIZE = 256   # mini-batch size within each epoch
-LR = 1e-5               # very low LR: preserve x=898 baseline, small careful updates
+LR = 5e-5               # learning rate
 GAMMA = 0.99
 GAE_LAMBDA = 0.95
 CLIP_EPS = 0.1
@@ -34,8 +34,9 @@ MAX_GRAD_NORM = 0.5
 GREEDY_CHECK_ROLLOUTS = 8   # run greedy eval every N rollouts
 
 # Behavioral Cloning from successful episodes (flag_get=True)
-BC_COEF = 0.2           # gentle BC: preserve PPO-learned behavior while slowly nudging toward completions
-BC_UPDATES_PER_ROLLOUT = 2
+BC_COEF = 0.5           # BC loss weight — targeted BC is safer so we can use stronger signal
+BC_UPDATES_PER_ROLLOUT = 8
+BC_X_WINDOW = 500       # only use BC samples from x in [best_greedy_x-200, best_greedy_x+BC_X_WINDOW]
 BC_BATCH_SIZE = 128
 BC_BUFFER_MAX = 20000   # max (s, a) pairs stored from successful episodes
 
@@ -240,10 +241,12 @@ def train():
     best_time = 0
 
     # BC buffer: stores (uint8 state, action) pairs from episodes where flag_get=True
+    # Only keeps samples from x in [best_greedy_x-200, best_greedy_x+BC_X_WINDOW]
     bc_states = deque(maxlen=BC_BUFFER_MAX)  # uint8 to save memory
     bc_actions = deque(maxlen=BC_BUFFER_MAX)
     worker_ep_states = [[] for _ in range(N_WORKERS)]   # per-worker current episode states
     worker_ep_actions = [[] for _ in range(N_WORKERS)]  # per-worker current episode actions
+    worker_ep_xpos = [[] for _ in range(N_WORKERS)]     # per-worker x_pos for targeted BC
     worker_flag_get = [False] * N_WORKERS  # flag_get may appear before done; track per episode
     bc_episodes_total = 0
 
@@ -288,6 +291,7 @@ def train():
                     # Track per-worker episode for BC
                     worker_ep_states[i].append((states_t[i].cpu() * 255).byte())
                     worker_ep_actions[i].append(actions[i].cpu())
+                    worker_ep_xpos[i].append(info.get('x_pos', 0))
                     # flag_get can appear before done (during victory animation), so track per episode
                     if info.get('flag_get', False):
                         worker_flag_get[i] = True
@@ -302,15 +306,22 @@ def train():
                         total_ep_rewards.append(ep_rewards[i])
                         ep_rewards[i] = 0.0
                         if worker_flag_get[i]:
-                            # Add successful episode to BC buffer
-                            bc_states.extend(worker_ep_states[i])
-                            bc_actions.extend(worker_ep_actions[i])
-                            bc_episodes_total += 1
-                            # Defer greedy eval to after this rollout finishes
-                            flag_get_this_rollout = True
-                            print(f"  BC: ep {bc_episodes_total} added ({len(worker_ep_states[i])} steps, buf={len(bc_states)})")
+                            # Targeted BC: only keep samples near current stuck point
+                            x_lo = max(0, best_greedy_x - 200)
+                            x_hi = best_greedy_x + BC_X_WINDOW
+                            n_added = 0
+                            for s, a, xp in zip(worker_ep_states[i], worker_ep_actions[i], worker_ep_xpos[i]):
+                                if x_lo <= xp <= x_hi:
+                                    bc_states.append(s)
+                                    bc_actions.append(a)
+                                    n_added += 1
+                            if n_added > 0:
+                                bc_episodes_total += 1
+                                flag_get_this_rollout = True
+                                print(f"  BC: ep {bc_episodes_total} added ({n_added}/{len(worker_ep_states[i])} steps, x=[{x_lo},{x_hi}], buf={len(bc_states)})")
                         worker_ep_states[i] = []
                         worker_ep_actions[i] = []
+                        worker_ep_xpos[i] = []
                         worker_flag_get[i] = False
                         ns = envs[i].reset()[0]
                     next_states.append(ns)
