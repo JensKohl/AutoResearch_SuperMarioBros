@@ -24,8 +24,8 @@ N_WORKERS = 8
 N_STEPS = 128           # env steps per worker before each PPO update
 N_EPOCHS = 4            # PPO gradient epochs per rollout
 MINI_BATCH_SIZE = 256   # mini-batch size within each epoch
-LR = 1e-5               # PPO optimizer LR — low to preserve x=898 baseline
-LR_BC = 2e-4            # BC optimizer LR — higher since only the final output layer (512→n_actions) is updated
+LR = 5e-5               # PPO optimizer LR — higher OK since conv+policy[0] are frozen (only linear head trained)
+LR_BC = 2e-4            # BC optimizer LR — final output layer only (512→n_actions)
 GAMMA = 0.99
 GAE_LAMBDA = 0.95
 CLIP_EPS = 0.1
@@ -201,10 +201,13 @@ def train():
 
     n_actions = envs[0].action_space.n
     model = PolicyModel(n_actions).to(device)
-    optimizer = optim.Adam(model.parameters(), lr=LR, eps=1e-5)
-    # Separate BC optimizer: only updates the final output layer (policy[-1] = Linear 512→n_actions).
-    # This is the most surgical possible BC update — only the action-logit mapping changes.
-    # Conv features (3136-dim) and the first FC layer (3136→512) are completely frozen during BC.
+    # Exp 136: freeze conv + policy[0] completely. Only train policy[-1] (action output) and
+    # value_head (critic). This prevents PPO from degrading the warm-start's feature extraction
+    # that encodes x=899 knowledge, while still allowing the policy to adapt its action selection
+    # and the critic to learn accurate value estimates.
+    trainable_params = list(model.policy[-1].parameters()) + list(model.value_head.parameters())
+    optimizer = optim.Adam(trainable_params, lr=LR, eps=1e-5)
+    # BC optimizer: same target — only the final action output layer.
     bc_optimizer = optim.Adam(model.policy[-1].parameters(), lr=LR_BC, eps=1e-5)
 
     # Warm start: load CNN weights from the saved DQN checkpoint.
@@ -389,9 +392,9 @@ def train():
                     value_loss = nn.MSELoss()(values.squeeze(-1), ret)
                     loss = policy_loss + VF_COEF * value_loss - ENT_COEF * entropy
 
-                    optimizer.zero_grad()
+                    model.zero_grad()   # zero ALL params including frozen ones to prevent gradient accumulation
                     loss.backward()
-                    nn.utils.clip_grad_norm_(model.parameters(), MAX_GRAD_NORM)
+                    nn.utils.clip_grad_norm_(trainable_params, MAX_GRAD_NORM)
                     optimizer.step()
 
             # ── Behavioral Cloning from successful episodes ──────────────────────
