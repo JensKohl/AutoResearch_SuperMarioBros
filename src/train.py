@@ -24,7 +24,8 @@ N_WORKERS = 8
 N_STEPS = 128           # env steps per worker before each PPO update
 N_EPOCHS = 4            # PPO gradient epochs per rollout
 MINI_BATCH_SIZE = 256   # mini-batch size within each epoch
-LR = 5e-5               # learning rate
+LR = 1e-5               # PPO optimizer LR — low to preserve x=898 baseline
+LR_BC = 5e-5            # BC optimizer LR — can be higher since only updates policy head
 GAMMA = 0.99
 GAE_LAMBDA = 0.95
 CLIP_EPS = 0.1
@@ -34,7 +35,7 @@ MAX_GRAD_NORM = 0.5
 GREEDY_CHECK_ROLLOUTS = 8   # run greedy eval every N rollouts
 
 # Behavioral Cloning from successful episodes (flag_get=True)
-BC_COEF = 0.5           # BC loss weight — targeted BC is safer so we can use stronger signal
+BC_COEF = 1.0           # BC loss weight — conv frozen so BC can be aggressive without corrupting early-game
 BC_UPDATES_PER_ROLLOUT = 8
 BC_X_WINDOW = 500       # only use BC samples from x in [best_greedy_x-200, best_greedy_x+BC_X_WINDOW]
 BC_BATCH_SIZE = 128
@@ -201,6 +202,8 @@ def train():
     n_actions = envs[0].action_space.n
     model = PolicyModel(n_actions).to(device)
     optimizer = optim.Adam(model.parameters(), lr=LR, eps=1e-5)
+    # Separate BC optimizer: only updates policy FC head (conv features frozen during BC)
+    bc_optimizer = optim.Adam(model.policy.parameters(), lr=LR_BC, eps=1e-5)
 
     # Warm start: load CNN weights from the saved DQN checkpoint.
     # The DQN used 'advantage.*' for action scores and 'value.*' for state value.
@@ -399,10 +402,10 @@ def train():
                         bc_h = -(bc_probs * torch.log(bc_probs + 1e-8)).sum(dim=1)
                         bc_w = bc_h / (bc_h.mean() + 1e-8)  # normalize: mean weight = 1
                     bc_loss = (nn.CrossEntropyLoss(reduction='none')(bc_logits, bc_a) * bc_w).mean()
-                    optimizer.zero_grad()
+                    bc_optimizer.zero_grad()
                     (BC_COEF * bc_loss).backward()
-                    nn.utils.clip_grad_norm_(model.parameters(), MAX_GRAD_NORM)
-                    optimizer.step()
+                    nn.utils.clip_grad_norm_(model.policy.parameters(), MAX_GRAD_NORM)
+                    bc_optimizer.step()
 
             rollout_count += 1
 
