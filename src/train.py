@@ -21,8 +21,8 @@ from src.constants import TIME_BUDGET, MAX_EPISODE_STEPS, PRO_MOVEMENT
 from src.model import PolicyModel
 
 # Distillation + BC hyperparameters
-# Strategy: protect early-game (x<900) via distillation from a frozen reference model,
-#           teach late-game (x>=900) via BC from completion episodes.
+# Strategy: protect early-game (x<600) via distillation from a frozen reference model,
+#           teach barrier+beyond (x>=900) via BC from any episode reaching x>=900.
 N_WORKERS = 8
 N_STEPS = 128
 LR = 1e-4               # optimizer LR (policy[-1] only)
@@ -30,20 +30,23 @@ MAX_GRAD_NORM = 0.5
 GREEDY_CHECK_ROLLOUTS = 8
 
 # Epsilon-greedy exploration for workers
-EPS_EXPLORE = 0.30      # 30% random actions — more completions than exp137 (was 15%)
+EPS_EXPLORE = 0.40      # 40% random actions — more x>900 episodes than exp138 (was 30%)
 
-BEYOND_THRESHOLD = 900  # x position where beyond-barrier behavior kicks in
+# Distillation protects x < BEYOND_THRESHOLD only (was 900 — that blocked x=899 learning)
+BEYOND_THRESHOLD = 600
+
+# BC collects from any episode where max_x >= BC_X_THRESHOLD (was: flag_get=True only)
+# Workers regularly reach x>900 with EPS=0.40, so BC data is plentiful
+BC_X_THRESHOLD = 900
 
 # Distillation: force model to match reference (frozen original) on early-game states (x < BEYOND_THRESHOLD)
-# This counteracts BC's tendency to corrupt early-game behavior by fixing the linear output
-# for early-game feature vectors.
-DISTILL_COEF = 5.0      # strong distillation — preserves x<900 behavior
+DISTILL_COEF = 5.0
 DISTILL_BUFFER_MAX = 5000
 
-# Behavioral Cloning from completion episodes (flag_get=True), x >= BEYOND_THRESHOLD only
+# Behavioral Cloning from episodes reaching x >= BC_X_THRESHOLD
 BC_COEF = 3.0
 BC_UPDATES_PER_ROLLOUT = 8
-BC_X_WINDOW = 2000      # keep samples from x in [best_greedy_x, best_greedy_x + 2000]
+BC_X_WINDOW = 2000      # keep samples from x in [BC_X_THRESHOLD, BC_X_THRESHOLD + 2000]
 BC_BATCH_SIZE = 128
 BC_BUFFER_MAX = 20000
 
@@ -207,8 +210,8 @@ def train():
 
     n_actions = envs[0].action_space.n
     model = PolicyModel(n_actions).to(device)
-    # Exp 138: only train policy[-1] (the final Linear 512→n_actions layer).
-    # Distillation counteracts early-game degradation; BC trains beyond-barrier behavior.
+    # Exp 139: only train policy[-1] (the final Linear 512→n_actions layer).
+    # Distillation (x<600) counteracts early-game degradation; BC (x>=900 episodes) trains barrier+beyond.
     optimizer = optim.Adam(model.policy[-1].parameters(), lr=LR, eps=1e-5)
 
     model_path = "MODELS/model.pt"
@@ -248,7 +251,7 @@ def train():
     best_score = 0
     best_time = 0
 
-    # BC buffer: (state, action) from completion episodes, x in [best_greedy_x, best_greedy_x+BC_X_WINDOW]
+    # BC buffer: (state, action) from any episode reaching x >= BC_X_THRESHOLD
     bc_states = deque(maxlen=BC_BUFFER_MAX)
     bc_actions = deque(maxlen=BC_BUFFER_MAX)
     worker_ep_states = [[] for _ in range(N_WORKERS)]
@@ -311,9 +314,11 @@ def train():
                     if done:
                         total_ep_rewards.append(ep_rewards[i])
                         ep_rewards[i] = 0.0
-                        if worker_flag_get[i]:
-                            x_lo = best_greedy_x
-                            x_hi = best_greedy_x + BC_X_WINDOW
+                        # BC from any episode that passed the barrier (not just flag_get)
+                        ep_max_x = max(worker_ep_xpos[i]) if worker_ep_xpos[i] else 0
+                        if ep_max_x >= BC_X_THRESHOLD:
+                            x_lo = BC_X_THRESHOLD
+                            x_hi = BC_X_THRESHOLD + BC_X_WINDOW
                             n_added = 0
                             for s, a, xp in zip(worker_ep_states[i], worker_ep_actions[i], worker_ep_xpos[i]):
                                 if x_lo <= xp <= x_hi:
@@ -322,8 +327,9 @@ def train():
                                     n_added += 1
                             if n_added > 0:
                                 bc_episodes_total += 1
-                                flag_get_this_rollout = True
                                 print(f"  BC: ep {bc_episodes_total} added ({n_added}/{len(worker_ep_states[i])} steps, x=[{x_lo},{x_hi}], buf={len(bc_states)})")
+                        if worker_flag_get[i]:
+                            flag_get_this_rollout = True  # trigger extra greedy check on level completion
                         worker_ep_states[i] = []
                         worker_ep_actions[i] = []
                         worker_ep_xpos[i] = []
