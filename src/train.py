@@ -19,10 +19,10 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from src.constants import TIME_BUDGET, MAX_EPISODE_STEPS, PRO_MOVEMENT
 from src.model import PolicyModel
 
-# Beyond-head + BC hyperparameters (exp140)
+# Beyond-head + BC hyperparameters (exp141)
 # Strategy: freeze policy[-1] entirely. Train only beyond_head (a separate Linear(512,n_actions)
 #           initialized to zero) via BC from x>=900 episodes. Policy[-1] can never degrade.
-#           Regularize beyond_head to stay near-zero for x<600 states (no corruption of early game).
+#           Regularize beyond_head to stay near-zero for ALL x<900 states (covers full pre-barrier path).
 N_WORKERS = 8
 N_STEPS = 128
 LR = 1e-4               # optimizer LR (beyond_head only)
@@ -32,10 +32,11 @@ GREEDY_CHECK_ROLLOUTS = 8
 # Epsilon-greedy exploration for workers
 EPS_EXPLORE = 0.40      # 40% random actions — sufficient for x>900 episodes
 
-# Regularization: force beyond_head near-zero for x < BEYOND_THRESHOLD states
-# This prevents BC from corrupting early-game through the shared beyond_head.W
-BEYOND_THRESHOLD = 600
-REG_COEF = 2.0          # ||beyond_head(f(x<600))||^2 regularization
+# Regularization: force beyond_head near-zero for x < BEYOND_THRESHOLD states.
+# Must cover full pre-barrier region (x<900) so BC can't corrupt x=600-899 path.
+# Exp140 bug: BEYOND_THRESHOLD=600 left x=600-899 unprotected → greedy degraded to x=327.
+BEYOND_THRESHOLD = 900
+REG_COEF = 5.0          # stronger regularization to dominate BC drift on pre-barrier states
 REG_BUFFER_MAX = 5000
 
 # BC collects from any episode where max_x >= BC_X_THRESHOLD
