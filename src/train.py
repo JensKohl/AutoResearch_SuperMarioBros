@@ -18,31 +18,35 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from src.constants import TIME_BUDGET, MAX_EPISODE_STEPS, PRO_MOVEMENT
 from src.model import PolicyModel
 
-# PPO + barrier bonus hyperparameters (exp142)
+# PPO + KL-anchor hyperparameters (exp144)
 # Strategy: PPO on policy[-1]+value_head only (frozen conv+policy[0]).
-#           Barrier bonus (+500 reward) for first time x>899 per episode creates
-#           a large positive advantage for jumping over the pipe, overcoming
-#           the usual PPO degradation at x=899.
+#           KL penalty KL(π||π_ref) to frozen reference model prevents
+#           the policy from drifting away from the exp142 x=898 checkpoint.
+#           Barrier bonus (+750 reward) for first crossing x>899 per episode
+#           incentivizes the jump action. Very frequent checks (every 2 rollouts)
+#           to catch brief improvements before degradation.
 N_WORKERS = 8
 N_STEPS = 128
-LR = 5e-5
+LR = 2e-5              # lower LR — slower degradation
 MAX_GRAD_NORM = 0.5
 
 # PPO
-CLIP_EPS = 0.10            # conservative trust region (was 0.15) — slower but less degradation
+CLIP_EPS = 0.10
 ENTROPY_COEF = 0.01
 VALUE_COEF = 0.5
 GAE_GAMMA = 0.99
 GAE_LAMBDA = 0.95
-PPO_EPOCHS = 2             # halved (was 4) — fewer updates per rollout to slow degradation
+PPO_EPOCHS = 1             # absolute minimum — fewest updates per rollout
 MINI_BATCH = 256
-GREEDY_CHECK_ROLLOUTS = 4  # check twice as often (was 8) — catch improvements earlier
+GREEDY_CHECK_ROLLOUTS = 2  # very frequent — catch brief improvements
+
+# KL penalty coefficient: penalizes deviation from frozen reference model.
+# KL(π||π_ref) is added to PPO loss. Higher = stronger anchor to x=898 behavior.
+KL_COEF = 1.0
 
 # Reward: large bonus for first time crossing x=899 barrier per episode.
-# This makes the PPO advantage estimate very large for the jump action at x=899,
-# overcoming the many small negative advantages from failed attempts.
 BARRIER_X = 899
-BARRIER_BONUS = 750.0      # slightly higher (was 500) — push past x=899
+BARRIER_BONUS = 750.0
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 warnings.filterwarnings("ignore")
@@ -223,6 +227,7 @@ def train():
 
     model_path = "MODELS/model.pt"
     model_saved = False
+    ref_model = None  # frozen reference for KL penalty
     if os.path.exists(model_path):
         try:
             saved = torch.load(model_path, map_location=device)
@@ -235,6 +240,13 @@ def train():
                 model_dict.update(conv_weights)
                 model.load_state_dict(model_dict)
                 print(f"Warm start: loaded CNN from DQN checkpoint, fresh policy/value heads")
+            # Build frozen reference model for KL penalty
+            ref_model = PolicyModel(n_actions).to(device)
+            ref_model.load_state_dict(model.state_dict())
+            for p in ref_model.parameters():
+                p.requires_grad = False
+            ref_model.eval()
+            print("KL reference model frozen from warm-start checkpoint.")
         except Exception as e:
             print(f"Warm start failed ({e}), starting fresh")
 
@@ -351,7 +363,18 @@ def train():
                     surr2 = torch.clamp(ratio, 1 - CLIP_EPS, 1 + CLIP_EPS) * mb_adv
                     policy_loss = -torch.min(surr1, surr2).mean()
                     value_loss = VALUE_COEF * F.mse_loss(vals.squeeze(1), mb_ret)
-                    loss = policy_loss + value_loss - ENTROPY_COEF * entropy
+
+                    # KL penalty: penalize deviation from frozen reference model.
+                    # Prevents policy from drifting away from x=898 behavior.
+                    if ref_model is not None:
+                        with torch.no_grad():
+                            ref_logits = ref_model(mb_s)
+                            ref_log_probs = F.log_softmax(ref_logits, dim=1)
+                        curr_log_probs = F.log_softmax(logits, dim=1)
+                        kl = F.kl_div(curr_log_probs, ref_log_probs.exp(), reduction='batchmean')
+                        loss = policy_loss + value_loss - ENTROPY_COEF * entropy + KL_COEF * kl
+                    else:
+                        loss = policy_loss + value_loss - ENTROPY_COEF * entropy
 
                     optimizer.zero_grad()
                     loss.backward()
