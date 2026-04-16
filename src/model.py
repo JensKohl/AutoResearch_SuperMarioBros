@@ -33,10 +33,18 @@ class PolicyModel(nn.Module):
         nn.init.orthogonal_(self.policy[-1].weight, gain=0.01)
         nn.init.zeros_(self.policy[-1].bias)
 
+        # Residual head for beyond-barrier corrections (exp140).
+        # Starts at zero — initially a no-op. BC trains this for x>=900 states while
+        # policy[-1] stays frozen, giving true isolation between early and late game.
+        self.beyond_head = nn.Linear(512, n_actions)
+        nn.init.zeros_(self.beyond_head.weight)
+        nn.init.zeros_(self.beyond_head.bias)
+
     def forward(self, x):
         """Returns action logits — evaluate.py uses .max(1)[1] for greedy action."""
         f = self.conv(x).view(x.size(0), -1)
-        return self.policy(f)
+        features = self.policy[:2](f)   # 512D: Linear(3136→512) + ReLU
+        return self.policy[-1](features) + self.beyond_head(features)
 
     def full_forward(self, x):
         """Returns (logits, value) used during PPO training."""

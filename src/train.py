@@ -6,7 +6,6 @@ import shimmy
 import gymnasium as gym
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 import torch.optim as optim
 import numpy as np
 import cv2
@@ -20,28 +19,27 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from src.constants import TIME_BUDGET, MAX_EPISODE_STEPS, PRO_MOVEMENT
 from src.model import PolicyModel
 
-# Distillation + BC hyperparameters
-# Strategy: protect early-game (x<600) via distillation from a frozen reference model,
-#           teach barrier+beyond (x>=900) via BC from any episode reaching x>=900.
+# Beyond-head + BC hyperparameters (exp140)
+# Strategy: freeze policy[-1] entirely. Train only beyond_head (a separate Linear(512,n_actions)
+#           initialized to zero) via BC from x>=900 episodes. Policy[-1] can never degrade.
+#           Regularize beyond_head to stay near-zero for x<600 states (no corruption of early game).
 N_WORKERS = 8
 N_STEPS = 128
-LR = 1e-4               # optimizer LR (policy[-1] only)
+LR = 1e-4               # optimizer LR (beyond_head only)
 MAX_GRAD_NORM = 0.5
 GREEDY_CHECK_ROLLOUTS = 8
 
 # Epsilon-greedy exploration for workers
-EPS_EXPLORE = 0.40      # 40% random actions — more x>900 episodes than exp138 (was 30%)
+EPS_EXPLORE = 0.40      # 40% random actions — sufficient for x>900 episodes
 
-# Distillation protects x < BEYOND_THRESHOLD only (was 900 — that blocked x=899 learning)
+# Regularization: force beyond_head near-zero for x < BEYOND_THRESHOLD states
+# This prevents BC from corrupting early-game through the shared beyond_head.W
 BEYOND_THRESHOLD = 600
+REG_COEF = 2.0          # ||beyond_head(f(x<600))||^2 regularization
+REG_BUFFER_MAX = 5000
 
-# BC collects from any episode where max_x >= BC_X_THRESHOLD (was: flag_get=True only)
-# Workers regularly reach x>900 with EPS=0.40, so BC data is plentiful
+# BC collects from any episode where max_x >= BC_X_THRESHOLD
 BC_X_THRESHOLD = 900
-
-# Distillation: force model to match reference (frozen original) on early-game states (x < BEYOND_THRESHOLD)
-DISTILL_COEF = 5.0
-DISTILL_BUFFER_MAX = 5000
 
 # Behavioral Cloning from episodes reaching x >= BC_X_THRESHOLD
 BC_COEF = 3.0
@@ -210,9 +208,10 @@ def train():
 
     n_actions = envs[0].action_space.n
     model = PolicyModel(n_actions).to(device)
-    # Exp 139: only train policy[-1] (the final Linear 512→n_actions layer).
-    # Distillation (x<600) counteracts early-game degradation; BC (x>=900 episodes) trains barrier+beyond.
-    optimizer = optim.Adam(model.policy[-1].parameters(), lr=LR, eps=1e-5)
+    # Exp 140: only train beyond_head (residual Linear 512→n_actions, initialized to zero).
+    # policy[-1] is completely frozen — early-game behavior can never degrade.
+    # beyond_head learns residual corrections for x>=900 states via BC.
+    optimizer = optim.Adam(model.beyond_head.parameters(), lr=LR, eps=1e-5)
 
     model_path = "MODELS/model.pt"
     model_saved = False
@@ -220,7 +219,8 @@ def train():
         try:
             saved = torch.load(model_path, map_location=device)
             if any(k.startswith('policy.') for k in saved):
-                model.load_state_dict(saved)
+                # strict=False: model.pt may lack beyond_head keys (stays zero-initialized)
+                model.load_state_dict(saved, strict=False)
                 print(f"Warm start: loaded full PPO model from {model_path}")
             else:
                 model_dict = model.state_dict()
@@ -230,14 +230,6 @@ def train():
                 print(f"Warm start: loaded CNN from DQN checkpoint, fresh policy/value heads")
         except Exception as e:
             print(f"Warm start failed ({e}), starting fresh")
-
-    # Frozen reference model: copy of the loaded model (never updated).
-    # Used for distillation loss to preserve early-game (x < BEYOND_THRESHOLD) behavior.
-    ref_model = PolicyModel(n_actions).to(device)
-    ref_model.load_state_dict(model.state_dict())
-    for p in ref_model.parameters():
-        p.requires_grad = False
-    ref_model.eval()
 
     best_greedy_x, best_greedy_score = greedy_eval_x(model)
     best_combined = best_greedy_x + best_greedy_score
@@ -260,10 +252,9 @@ def train():
     worker_flag_get = [False] * N_WORKERS
     bc_episodes_total = 0
 
-    # Distillation buffer: states from worker steps where x < BEYOND_THRESHOLD.
-    # Used to force model to match ref_model on early-game states (prevent early-game degradation).
-    distill_states = deque(maxlen=DISTILL_BUFFER_MAX)
-    # Track current x_pos per worker (for distill buffer and beyond-barrier routing)
+    # Regularization buffer: early-game states (x < BEYOND_THRESHOLD) used to penalize
+    # beyond_head for being non-zero on states where it should stay at zero.
+    reg_states = deque(maxlen=REG_BUFFER_MAX)
     worker_current_x = [0] * N_WORKERS
 
     try:
@@ -294,9 +285,9 @@ def train():
                     x_pos = info.get('x_pos', 0)
                     worker_current_x[i] = x_pos
 
-                    # Distillation buffer: keep early-game states (before the barrier)
+                    # Regularization buffer: early-game states where beyond_head must stay near zero
                     if x_pos < BEYOND_THRESHOLD:
-                        distill_states.append((states_t[i].cpu() * 255).byte())
+                        reg_states.append((states_t[i].cpu() * 255).byte())
 
                     # Track episode for BC
                     worker_ep_states[i].append((states_t[i].cpu() * 255).byte())
@@ -340,40 +331,38 @@ def train():
 
                 states = next_states
 
-            # ── Combined Distillation + BC update ──────────────────────────────────
-            # Distillation: model(early_states) must match ref_model(early_states) — prevents early-game degradation.
-            # BC: model(late_states) must produce completion actions — teaches beyond-barrier behavior.
-            # Only policy[-1] (Linear 512→n_actions) is updated.
-            has_distill = len(distill_states) >= BC_BATCH_SIZE
+            # ── Beyond-head update ──────────────────────────────────────────────────
+            # policy[-1] is FROZEN — early-game behavior can never degrade.
+            # beyond_head learns residual corrections for x>=900 states via BC.
+            # Regularization forces beyond_head near-zero for x<600 states (no early-game corruption).
+            has_reg = len(reg_states) >= BC_BATCH_SIZE
             has_bc = len(bc_states) >= BC_BATCH_SIZE
 
-            if has_distill or has_bc:
+            if has_reg or has_bc:
                 for _ in range(BC_UPDATES_PER_ROLLOUT):
                     total_loss = torch.tensor(0.0, device=device)
 
-                    if has_distill:
-                        d_idx = random.sample(range(len(distill_states)), min(BC_BATCH_SIZE, len(distill_states)))
-                        d_s = torch.stack([distill_states[i] for i in d_idx]).to(device).float() / 255.0
-                        new_logits = model(d_s)
-                        with torch.no_grad():
-                            ref_logits = ref_model(d_s)
-                            ref_probs = torch.softmax(ref_logits, dim=1)
-                        new_log_probs = F.log_softmax(new_logits, dim=1)
-                        # KL divergence: force model to match ref_model on early-game states
-                        distill_loss = -(ref_probs * new_log_probs).sum(dim=1).mean()
-                        total_loss = total_loss + DISTILL_COEF * distill_loss
+                    if has_reg:
+                        r_idx = random.sample(range(len(reg_states)), min(BC_BATCH_SIZE, len(reg_states)))
+                        r_s = torch.stack([reg_states[i] for i in r_idx]).to(device).float() / 255.0
+                        # beyond_head(features) must stay near zero for early-game states
+                        r_f = model.conv(r_s).view(r_s.size(0), -1)
+                        r_features = model.policy[:2](r_f)
+                        reg_logits = model.beyond_head(r_features)
+                        reg_loss = (reg_logits ** 2).mean()
+                        total_loss = total_loss + REG_COEF * reg_loss
 
                     if has_bc:
                         bc_idx = random.sample(range(len(bc_states)), BC_BATCH_SIZE)
                         bc_s = torch.stack([bc_states[i] for i in bc_idx]).to(device).float() / 255.0
                         bc_a = torch.stack([bc_actions[i] for i in bc_idx]).to(device)
-                        bc_logits = model(bc_s)
+                        bc_logits = model(bc_s)   # policy[-1](f) + beyond_head(f)
                         bc_loss = nn.CrossEntropyLoss()(bc_logits, bc_a)
                         total_loss = total_loss + BC_COEF * bc_loss
 
                     optimizer.zero_grad()
                     total_loss.backward()
-                    nn.utils.clip_grad_norm_(model.policy[-1].parameters(), MAX_GRAD_NORM)
+                    nn.utils.clip_grad_norm_(model.beyond_head.parameters(), MAX_GRAD_NORM)
                     optimizer.step()
 
             rollout_count += 1
