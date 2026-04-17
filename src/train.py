@@ -18,7 +18,9 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from src.constants import TIME_BUDGET, MAX_EPISODE_STEPS, PRO_MOVEMENT
 from src.model import PolicyModel
 
-# PPO T=0.5 + LR=3e-6 run 2 (exp193) — continue from x=1521 score=700.
+# PPO + score_delta reward + T=0.5 + LR=3e-6 (exp194)
+# Add score_delta*0.3 to training reward — evaluate.py counts score equally to x_dist.
+# Model currently ignores coins; adding score incentive may improve evaluate.py metric.
 N_WORKERS = 8
 N_STEPS = 128
 LR = 3e-6
@@ -120,19 +122,24 @@ class DistanceReward(gym.Wrapper):
     def __init__(self, env, barrier_bonus=0.0):
         super().__init__(env)
         self.curr_x = 0
+        self.curr_score = 0
         self.barrier_crossed = False
         self.barrier_bonus = barrier_bonus
 
     def reset(self, **kwargs):
         self.curr_x = 0
+        self.curr_score = 0
         self.barrier_crossed = False
         return self.env.reset(**kwargs)
 
     def step(self, action):
         obs, reward, terminated, truncated, info = self.env.step(action)
         x_pos = info.get('x_pos', 0)
+        score = info.get('score', 0)
         reward += (x_pos - self.curr_x) * 2.0
+        reward += (score - self.curr_score) * 0.3   # score delta bonus
         self.curr_x = x_pos
+        self.curr_score = score
         reward -= 0.1
         if self.barrier_bonus > 0 and x_pos > BARRIER_X and not self.barrier_crossed:
             reward += self.barrier_bonus
