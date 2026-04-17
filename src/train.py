@@ -18,11 +18,11 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from src.constants import TIME_BUDGET, MAX_EPISODE_STEPS, PRO_MOVEMENT
 from src.model import PolicyModel
 
-# PPO KL-anchored from x=722 (exp153)
-# KL(π||π_ref) penalty prevents policy from drifting away from reference model.
-# exp144 showed KL=1.0 prevents degradation but blocks learning.
-# exp152 showed ultra-conservative PPO alone still degrades to x=302.
-# KL_COEF=0.5: midpoint between too-strong (1.0) and too-weak (0.3).
+# PPO low-temperature sampling from x=722 (exp154)
+# Root cause of degradation: stochastic workers die at x=302, generating no
+# x=700+ experience. PPO updates corrupt x=722 behavior based on useless data.
+# Fix: use softmax(logits/TEMP) with TEMP=0.3 — workers act near-greedy,
+# generating x=700+ trajectories that PPO can reinforce rather than corrupt.
 N_WORKERS = 8
 N_STEPS = 128
 LR = 2e-5
@@ -30,7 +30,7 @@ MAX_GRAD_NORM = 0.5
 
 # PPO
 CLIP_EPS = 0.10
-ENTROPY_COEF = 0.01
+ENTROPY_COEF = 0.005   # lower entropy — consistent with near-greedy sampling
 VALUE_COEF = 0.5
 GAE_GAMMA = 0.99
 GAE_LAMBDA = 0.95
@@ -38,7 +38,7 @@ PPO_EPOCHS = 1
 MINI_BATCH = 256
 GREEDY_CHECK_ROLLOUTS = 2
 
-KL_COEF = 0.5  # KL penalty weight — prevents policy drift
+SAMPLE_TEMP = 0.3      # temperature for rollout sampling (1.0=standard PPO, lower=more greedy)
 
 BARRIER_X = 899
 BARRIER_BONUS = 750.0
@@ -207,8 +207,8 @@ def train():
     n_actions = envs[0].action_space.n
     model = PolicyModel(n_actions).to(device)
 
-    # Freeze conv + policy[:2] (good features from exp142 in model.pt).
-    # Train policy[-1] + value_head via KL-anchored PPO.
+    # Freeze conv + policy[:2] (good features preserved from exp142 in model.pt).
+    # Train fresh policy[-1] + value_head via PPO.
     for p in model.conv.parameters():
         p.requires_grad = False
     for p in model.policy[:2].parameters():
@@ -228,14 +228,6 @@ def train():
             print(f"Warm start: loaded model from {model_path}")
         except Exception as e:
             print(f"Load failed ({e}), starting fresh")
-
-    # Build frozen reference model for KL penalty
-    ref_model = PolicyModel(n_actions).to(device)
-    ref_model.load_state_dict(model.state_dict())
-    for p in ref_model.parameters():
-        p.requires_grad = False
-    ref_model.eval()
-    print(f"KL reference model loaded (KL_COEF={KL_COEF})")
 
     best_greedy_x, best_greedy_score = greedy_eval_x(model)
     best_combined = best_greedy_x + best_greedy_score
@@ -266,7 +258,9 @@ def train():
 
                 with torch.no_grad():
                     logits, values = model.full_forward(states_t)
-                    probs = torch.softmax(logits, dim=1)
+                    # Low-temperature sampling: workers act near-greedy to
+                    # generate useful x=700+ trajectories (not x=302 noise)
+                    probs = torch.softmax(logits / SAMPLE_TEMP, dim=1)
                     dist = torch.distributions.Categorical(probs)
                     actions = dist.sample()
                     log_probs = dist.log_prob(actions)
@@ -327,7 +321,7 @@ def train():
             RET = returns.view(-1)
             ADV = (ADV - ADV.mean()) / (ADV.std() + 1e-8)
 
-            # ── PPO + KL update ──────────────────────────────────────────────────
+            # ── PPO update ───────────────────────────────────────────────────────
             n = len(S)
             for _ in range(PPO_EPOCHS):
                 idx = torch.randperm(n)
@@ -340,7 +334,7 @@ def train():
                     mb_ret = RET[mb].to(device)
 
                     logits, vals = model.full_forward(mb_s)
-                    dist = torch.distributions.Categorical(torch.softmax(logits, dim=1))
+                    dist = torch.distributions.Categorical(torch.softmax(logits / SAMPLE_TEMP, dim=1))
                     new_lp = dist.log_prob(mb_a)
                     entropy = dist.entropy().mean()
 
@@ -349,15 +343,7 @@ def train():
                     surr2 = torch.clamp(ratio, 1 - CLIP_EPS, 1 + CLIP_EPS) * mb_adv
                     policy_loss = -torch.min(surr1, surr2).mean()
                     value_loss = VALUE_COEF * F.mse_loss(vals.squeeze(1), mb_ret)
-
-                    # KL(π||π_ref): penalize divergence from reference model
-                    with torch.no_grad():
-                        ref_logits = ref_model(mb_s)
-                        ref_probs = torch.softmax(ref_logits, dim=1)
-                    curr_probs = torch.softmax(logits, dim=1)
-                    kl_loss = (curr_probs * (torch.log(curr_probs + 1e-8) - torch.log(ref_probs + 1e-8))).sum(1).mean()
-
-                    loss = policy_loss + value_loss - ENTROPY_COEF * entropy + KL_COEF * kl_loss
+                    loss = policy_loss + value_loss - ENTROPY_COEF * entropy
 
                     optimizer.zero_grad()
                     loss.backward()
