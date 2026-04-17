@@ -18,11 +18,11 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from src.constants import TIME_BUDGET, MAX_EPISODE_STEPS, PRO_MOVEMENT
 from src.model import PolicyModel
 
-# PPO: train beyond_head only, T=0.5, LR=1e-6 (exp169)
-# beyond_head starts at zeros. At LR=1e-6 after 64 rollouts, max correction ≈ 0.005.
-# policy[-1] logit diff at x=303 ≈ 2-5 → beyond_head can't flip it (safe).
-# At x=899+, policy[-1] may be uncertain → 0.005 correction can guide it.
-# T=0.5 + frozen policy[-1] → more exploration without risk of corrupting x=303.
+# PPO T=0.7 + LR=1e-6 + reinit value_head (exp170)
+# Stuck at 1699. Need exploration past x=899.
+# T=0.7: workers take non-greedy action ~45% of the time at frontier states.
+# LR=1e-6: too slow to flip x=303 even with high-noise gradients.
+# Trainable: policy[-1] + value_head (back to full policy training).
 N_WORKERS = 8
 N_STEPS = 128
 LR = 1e-6
@@ -38,7 +38,7 @@ PPO_EPOCHS = 1
 MINI_BATCH = 256
 GREEDY_CHECK_ROLLOUTS = 2
 
-SAMPLE_TEMP = 0.5      # more exploration — workers sometimes venture past x=899
+SAMPLE_TEMP = 0.7      # high exploration — workers more often navigate past x=899
 
 BARRIER_X = 899
 BARRIER_BONUS = 750.0
@@ -207,15 +207,15 @@ def train():
     n_actions = envs[0].action_space.n
     model = PolicyModel(n_actions).to(device)
 
-    # Freeze conv + policy (ALL layers). Train beyond_head + value_head.
-    # beyond_head starts at zeros — corrections at x=303 are ~0.005 max (LR=1e-6)
-    # vs policy[-1] logit diff of 2-5 → can't flip x=303 greedy action.
+    # Freeze conv + policy[:2] + beyond_head. Train policy[-1] + value_head.
     for p in model.conv.parameters():
         p.requires_grad = False
-    for p in model.policy.parameters():
-        p.requires_grad = False  # entire policy frozen
+    for p in model.policy[:2].parameters():
+        p.requires_grad = False
+    for p in model.beyond_head.parameters():
+        p.requires_grad = False
 
-    trainable = list(model.beyond_head.parameters()) + list(model.value_head.parameters())
+    trainable = list(model.policy[-1].parameters()) + list(model.value_head.parameters())
     optimizer = optim.Adam(trainable, lr=LR, eps=1e-5)
 
     model_path = "MODELS/model.pt"
