@@ -18,8 +18,9 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from src.constants import TIME_BUDGET, MAX_EPISODE_STEPS, PRO_MOVEMENT
 from src.model import PolicyModel
 
-# PPO T=0.3 + LR=3e-6 run 3 (exp184)
-# exp183 jumped x=723->898. Continue same config — may reach x=899+ with score>800.
+# PPO T=0.3 + LR=3e-6 + reinit value_head (exp185)
+# Checks hit x=900 in exp184 (first barrier crossing!) but score only 400.
+# Reinit value_head for fresh advantages to help score improvement.
 N_WORKERS = 8
 N_STEPS = 128
 LR = 3e-6
