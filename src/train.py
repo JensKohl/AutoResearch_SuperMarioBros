@@ -18,11 +18,10 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from src.constants import TIME_BUDGET, MAX_EPISODE_STEPS, PRO_MOVEMENT
 from src.model import PolicyModel
 
-# PPO fully unfrozen + LR=1e-6 + reinit value_head (exp171)
-# Stuck at 1699. Unfreeze ALL layers — give model full freedom to adapt x>899 behavior.
-# Risk: x=303 might corrupt. Reward: model can learn genuinely new paths past x=899.
-# T=0.5: balanced exploration. LR=1e-6: small enough to not catastrophically forget.
-# All params trainable — conv + policy[:2] + policy[-1] + beyond_head + value_head.
+# PPO variable reward multiplier + LR=1e-6 + reinit (exp172)
+# Workers at T=0.5 already reach x>1500 (mean_reward ~5000), but greedy stuck at x=899.
+# Add 5x reward multiplier for x>899 to create sustained gradient signal past barrier.
+# Same safe LR=1e-6 + conv frozen for stability.
 N_WORKERS = 8
 N_STEPS = 128
 LR = 1e-6
@@ -38,10 +37,11 @@ PPO_EPOCHS = 1
 MINI_BATCH = 256
 GREEDY_CHECK_ROLLOUTS = 2
 
-SAMPLE_TEMP = 0.5      # balanced exploration
+SAMPLE_TEMP = 0.5      # workers regularly go past x=899 at this temperature
 
 BARRIER_X = 899
 BARRIER_BONUS = 750.0
+POST_BARRIER_MULT = 5.0  # 5x distance reward for x>BARRIER_X (vs 2x before)
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 warnings.filterwarnings("ignore")
@@ -135,7 +135,9 @@ class DistanceReward(gym.Wrapper):
     def step(self, action):
         obs, reward, terminated, truncated, info = self.env.step(action)
         x_pos = info.get('x_pos', 0)
-        reward += (x_pos - self.curr_x) * 2.0
+        delta_x = x_pos - self.curr_x
+        mult = POST_BARRIER_MULT if x_pos > BARRIER_X else 2.0
+        reward += delta_x * mult
         self.curr_x = x_pos
         reward -= 0.1
         if self.barrier_bonus > 0 and x_pos > BARRIER_X and not self.barrier_crossed:
@@ -207,8 +209,10 @@ def train():
     n_actions = envs[0].action_space.n
     model = PolicyModel(n_actions).to(device)
 
-    # Unfreeze all layers — full model training with small LR to minimize catastrophic forgetting.
-    trainable = list(model.parameters())
+    # Freeze conv (stability). Train everything else — policy[:2], policy[-1], beyond_head, value_head.
+    for p in model.conv.parameters():
+        p.requires_grad = False
+    trainable = [p for p in model.parameters() if p.requires_grad]
     optimizer = optim.Adam(trainable, lr=LR, eps=1e-5)
 
     model_path = "MODELS/model.pt"
