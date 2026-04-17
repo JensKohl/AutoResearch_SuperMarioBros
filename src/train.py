@@ -18,11 +18,9 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from src.constants import TIME_BUDGET, MAX_EPISODE_STEPS, PRO_MOVEMENT
 from src.model import PolicyModel
 
-# PPO T=0.3 + reinit value_head (exp162)
-# Hypothesis: value_head is over-estimating x=899 states after exp154-161 training.
-# If V(s_899) >> actual_return, advantage = actual - V < 0 at x=899.
-# Negative advantages at x=899 → PPO says "avoid x=899" → policy degrades.
-# Fix: reinitialize value_head at start; fresh estimates → positive advantages → stable.
+# PPO T=0.3 + reinit value_head, run 2 (exp163)
+# exp162 worked: reinit value_head gave 1299→1398 (score 400→500).
+# Run again from 1398 checkpoint with same config to continue accumulating improvements.
 N_WORKERS = 8
 N_STEPS = 128
 LR = 2e-5
