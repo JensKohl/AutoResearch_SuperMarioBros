@@ -18,13 +18,14 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from src.constants import TIME_BUDGET, MAX_EPISODE_STEPS, PRO_MOVEMENT
 from src.model import PolicyModel
 
-# PPO BARRIER_BONUS=10000 + T=0.5 + LR=1e-6 (exp174)
-# Key insight: with LR=1e-6 and BARRIER_BONUS=750, gradient signal is too weak to flip
-# x=899 argmax in 10 min (~667 steps needed vs ~256 available). BARRIER_BONUS=10000
-# gives ~50 steps to flip — achievable within budget. T=0.5 ensures workers cross x=899.
+# PPO frontier-filtered training: only update on x>FRONTIER_X states (exp175)
+# Key insight: gradients from x<800 states corrupt x=303/722. Filtering to x>800 only
+# targets the x=899 bottleneck without touching early-game behavior.
+# T=0.5 workers reliably reach x>800 → enough frontier data. LR=1e-5 safe when only
+# training on frontier states (no early-game pollution).
 N_WORKERS = 8
 N_STEPS = 128
-LR = 1e-6
+LR = 1e-5
 MAX_GRAD_NORM = 0.5
 
 # PPO
@@ -37,10 +38,11 @@ PPO_EPOCHS = 1
 MINI_BATCH = 256
 GREEDY_CHECK_ROLLOUTS = 2
 
-SAMPLE_TEMP = 0.5      # workers cross x=899 regularly at this temperature
+SAMPLE_TEMP = 0.5      # workers cross x=899 regularly
 
 BARRIER_X = 899
-BARRIER_BONUS = 10000.0
+BARRIER_BONUS = 750.0
+FRONTIER_X = 800       # only train on transitions where x_pos > FRONTIER_X
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 warnings.filterwarnings("ignore")
@@ -252,6 +254,9 @@ def train():
             rewards_buf = []
             dones_buf = []
             values_buf = []
+            xpos_buf = []   # track x_pos per (step, worker) for frontier filtering
+
+            worker_xpos = [0] * N_WORKERS  # current x_pos per worker
 
             for step in range(N_STEPS):
                 states_t = torch.FloatTensor(
@@ -269,6 +274,7 @@ def train():
                 actions_buf.append(actions.cpu())
                 log_probs_buf.append(log_probs.cpu())
                 values_buf.append(values.squeeze(1).cpu())
+                xpos_buf.append(list(worker_xpos))  # snapshot before step
 
                 next_states = []
                 rewards_step = []
@@ -280,6 +286,7 @@ def train():
                     ep_rewards[i] += r
                     rewards_step.append(r)
                     dones_step.append(float(done))
+                    worker_xpos[i] = info.get('x_pos', 0)
 
                     ct = info.get('time', 0) + info.get('score', 0)
                     if ct > best_total_reward:
@@ -291,6 +298,7 @@ def train():
                         total_ep_rewards.append(ep_rewards[i])
                         ep_rewards[i] = 0.0
                         ns = envs[i].reset()[0]
+                        worker_xpos[i] = 0
                     next_states.append(ns)
 
                 rewards_buf.append(torch.tensor(rewards_step, dtype=torch.float32))
@@ -321,10 +329,28 @@ def train():
             RET = returns.view(-1)
             ADV = (ADV - ADV.mean()) / (ADV.std() + 1e-8)
 
+            # Frontier filter: only train on transitions where x_pos > FRONTIER_X.
+            # This isolates the x=899 bottleneck from early-game state pollution.
+            xpos_flat = torch.tensor(
+                [xp for row in xpos_buf for xp in row], dtype=torch.float32
+            )
+            frontier_mask = xpos_flat > FRONTIER_X
+            n_frontier = frontier_mask.sum().item()
+
             # ── PPO update ───────────────────────────────────────────────────────
-            n = len(S)
+            # Use full dataset for fallback if frontier is empty; otherwise filter.
+            if n_frontier >= MINI_BATCH:
+                frontier_idx = frontier_mask.nonzero(as_tuple=True)[0]
+                n = n_frontier
+            else:
+                frontier_idx = None
+                n = len(S)
             for _ in range(PPO_EPOCHS):
-                idx = torch.randperm(n)
+                if frontier_idx is not None:
+                    perm = torch.randperm(n)
+                    idx = frontier_idx[perm]
+                else:
+                    idx = torch.randperm(n)
                 for start in range(0, n, MINI_BATCH):
                     mb = idx[start:start + MINI_BATCH]
                     mb_s = S[mb].to(device)
