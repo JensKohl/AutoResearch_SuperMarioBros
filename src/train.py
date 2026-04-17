@@ -18,12 +18,12 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from src.constants import TIME_BUDGET, MAX_EPISODE_STEPS, PRO_MOVEMENT
 from src.model import PolicyModel
 
-# PPO standard LR=3e-4 + all unfrozen (exp179)
-# Model reset to x=595 (policy head fresh). Standard Atari PPO hyperparams for fast relearn.
-# Silver lining: fresh policy head has no x=899 ceiling baked in — may push past it.
+# PPO LR=1e-4 + conv frozen — stabilize from x=722 toward x=899 (exp180)
+# LR=3e-4 hit x=722 then degraded to x=314 via catastrophic forgetting.
+# LR=1e-4 + frozen conv should be more stable while still learning.
 N_WORKERS = 8
 N_STEPS = 128
-LR = 3e-4
+LR = 1e-4
 MAX_GRAD_NORM = 0.5
 
 # PPO
@@ -36,7 +36,7 @@ PPO_EPOCHS = 4
 MINI_BATCH = 256
 GREEDY_CHECK_ROLLOUTS = 4
 
-SAMPLE_TEMP = 1.0      # standard temperature
+SAMPLE_TEMP = 0.7      # moderate exploration
 
 BARRIER_X = 899
 BARRIER_BONUS = 750.0
@@ -205,17 +205,10 @@ def train():
     n_actions = envs[0].action_space.n
     model = PolicyModel(n_actions).to(device)
 
-    # Freeze conv + policy[:2] + beyond_head.
-    # Train policy[-1] + value_head. Reinitialize value_head fresh so it
-    # doesn't overestimate x=899 states and generate negative advantages.
+    # Freeze conv only. Train policy[:2] + policy[-1] + beyond_head + value_head.
     for p in model.conv.parameters():
         p.requires_grad = False
-    for p in model.policy[:2].parameters():
-        p.requires_grad = False
-    for p in model.beyond_head.parameters():
-        p.requires_grad = False
-
-    trainable = list(model.policy[-1].parameters()) + list(model.value_head.parameters())
+    trainable = [p for p in model.parameters() if p.requires_grad]
     optimizer = optim.Adam(trainable, lr=LR, eps=1e-5)
 
     model_path = "MODELS/model.pt"
