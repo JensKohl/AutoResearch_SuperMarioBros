@@ -18,7 +18,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from src.constants import TIME_BUDGET, MAX_EPISODE_STEPS, PRO_MOVEMENT
 from src.model import PolicyModel
 
-# PPO T=0.5 + LR=3e-6 (exp192) — more exploration with same LR that produced jumps.
+# PPO T=0.5 + LR=3e-6 run 2 (exp193) — continue from x=1521 score=700.
 N_WORKERS = 8
 N_STEPS = 128
 LR = 3e-6
@@ -36,7 +36,7 @@ GREEDY_CHECK_ROLLOUTS = 2
 
 SAMPLE_TEMP = 0.5      # more exploration past x=1523
 
-BARRIER_X = 1523
+BARRIER_X = 1521
 BARRIER_BONUS = 750.0
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
