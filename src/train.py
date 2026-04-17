@@ -18,12 +18,13 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from src.constants import TIME_BUDGET, MAX_EPISODE_STEPS, PRO_MOVEMENT
 from src.model import PolicyModel
 
-# PPO T=0.5 + LR=1e-6 + safe freeze — climb from x=722 to x=899 (exp181)
-# Same proven-safe setup as exp164 but starting from x=722 with fresh policy head.
-# Workers at T=0.5 go past x=722 frequently; LR=1e-6 is safe enough not to corrupt x=303.
+# PPO T=0.3 + LR=3e-6 + safe freeze (exp182)
+# LR=1e-6 stable but too slow. Try LR=3e-6 — previously corrupted x=899 model's x=303
+# but this policy head is newly trained and may have smaller x=303 logit gap.
+# T=0.3 (safer workers) to reduce corruption risk.
 N_WORKERS = 8
 N_STEPS = 128
-LR = 1e-6
+LR = 3e-6
 MAX_GRAD_NORM = 0.5
 
 # PPO
@@ -36,7 +37,7 @@ PPO_EPOCHS = 1
 MINI_BATCH = 256
 GREEDY_CHECK_ROLLOUTS = 2
 
-SAMPLE_TEMP = 0.5      # workers explore past x=722 regularly
+SAMPLE_TEMP = 0.3      # near-greedy — safer workers
 
 BARRIER_X = 899
 BARRIER_BONUS = 750.0
