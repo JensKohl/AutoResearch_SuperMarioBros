@@ -18,18 +18,17 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from src.constants import TIME_BUDGET, MAX_EPISODE_STEPS, PRO_MOVEMENT
 from src.model import PolicyModel
 
-# PPO + fresh policy head + frozen features (exp150)
-# model.pt currently has good conv+policy[:2] features from exp142 but garbage policy[-1].
-# This experiment trains fresh policy[-1]+value_head (PPO) on top of those frozen features.
-# Higher entropy + LR than usual since policy head starts from scratch.
+# PPO continued from x=679 (exp151)
+# Continue from exp150 checkpoint (x=679). Learning curve shows progress — push to x=898+.
+# Lower LR now that we have a decent policy; keep barrier bonus for x=899 crossing.
 N_WORKERS = 8
 N_STEPS = 128
-LR = 1e-4              # higher LR — learning fresh policy head
+LR = 5e-5              # reduced from 1e-4 — policy stabilizing, need careful updates
 MAX_GRAD_NORM = 0.5
 
 # PPO
 CLIP_EPS = 0.15
-ENTROPY_COEF = 0.02    # higher entropy to encourage exploration from fresh head
+ENTROPY_COEF = 0.01
 VALUE_COEF = 0.5
 GAE_GAMMA = 0.99
 GAE_LAMBDA = 0.95
@@ -222,11 +221,7 @@ def train():
         try:
             saved = torch.load(model_path, map_location=device)
             model.load_state_dict(saved, strict=False)
-            # Re-init policy[-1] to near-uniform (orthogonal gain=0.01).
-            # The loaded policy[-1] is Kaiming (garbage), near-uniform is better for PPO.
-            nn.init.orthogonal_(model.policy[-1].weight, gain=0.01)
-            nn.init.zeros_(model.policy[-1].bias)
-            print(f"Loaded frozen features from {model_path}; reset policy[-1] to near-uniform init.")
+            print(f"Warm start: loaded model from {model_path}")
         except Exception as e:
             print(f"Load failed ({e}), starting fresh")
 
