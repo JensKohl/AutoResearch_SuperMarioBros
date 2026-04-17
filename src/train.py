@@ -18,9 +18,8 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from src.constants import TIME_BUDGET, MAX_EPISODE_STEPS, PRO_MOVEMENT
 from src.model import PolicyModel
 
-# PPO T=0.5 + LR=1e-6 from x=1519 (exp187)
-# LR=3e-6 now corrupts x=722/898. Back to safe LR=1e-6. T=0.5 gives workers past x=1519.
-# Workers at T=0.5 reach x>2000 — training signal for pushing past x=1519 barrier.
+# PPO BARRIER_X=1519 + T=0.5 + LR=1e-6 (exp188)
+# Move barrier to new frontier x=1519. Workers crossing it get +750 bonus — targeted signal.
 N_WORKERS = 8
 N_STEPS = 128
 LR = 1e-6
@@ -36,9 +35,9 @@ PPO_EPOCHS = 1
 MINI_BATCH = 256
 GREEDY_CHECK_ROLLOUTS = 2
 
-SAMPLE_TEMP = 0.5      # workers explore past x=1519
+SAMPLE_TEMP = 0.5      # workers cross x=1519 regularly
 
-BARRIER_X = 899
+BARRIER_X = 1519
 BARRIER_BONUS = 750.0
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
