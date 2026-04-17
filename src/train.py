@@ -18,8 +18,8 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from src.constants import TIME_BUDGET, MAX_EPISODE_STEPS, PRO_MOVEMENT
 from src.model import PolicyModel
 
-# PPO T=0.3 + LR=3e-6 from x=1520 (exp190)
-# T=0.3+LR=3e-6 pushed x=723->898->1519. Try from x=1520 — might improve before corrupting.
+# PPO T=0.3 + LR=3e-6 run 2 (exp191)
+# exp190 jumped to x=1523 score=400. Continue same config from new checkpoint.
 N_WORKERS = 8
 N_STEPS = 128
 LR = 3e-6
@@ -37,7 +37,7 @@ GREEDY_CHECK_ROLLOUTS = 2
 
 SAMPLE_TEMP = 0.3      # near-greedy workers
 
-BARRIER_X = 1520
+BARRIER_X = 1523
 BARRIER_BONUS = 750.0
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
