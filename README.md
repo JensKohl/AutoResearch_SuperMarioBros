@@ -5,7 +5,7 @@ This repository is an experiment applying Andrej Karpathy's [AutoResearch](https
 ## Overview
 An AI agent works autonomously to build a RL model via the `train.py` script so to reach the end of the level or as far as possible, in minimal time and a high score (in this order). To achieve this, the AI agent can modify the `train.py` script, the RL model algorithm, architecture, hyperparameters, reward function, etc.
 
-### Rules
+## Rules
 - `train.py` is fully mutable by the AI research agent. The agent can change the algorithm, model architecture, hyperparameters such as learning rate, the reward function, etc.
 - `evaluate.py` is read-only in which the the results of the training are evaluated.
 - `constants.py` contains static constraints like the training time budget, button configuration, etc.
@@ -21,7 +21,7 @@ To kick off the autonomous loop:
 
 ---
 
-# Summary
+## Summary
 
 203 autonomous experiments were run on branch `autoresearch/Apr13_2226` on an NVIDIA RTX 2060 (6 GB VRAM). Each experiment ran for ~10 minutes of wall-clock training, followed by a deterministic greedy evaluation. The optimisation target is:
 
@@ -30,7 +30,7 @@ total_reward = score + max_x_dist                          (level not completed)
 total_reward = 10000 + (400 − seconds_to_finish) + score + max_x_dist   (level completed)
 ```
 
-## Results at a glance
+### Results at a glance
 
 | Rank | Exp | Algorithm | total_reward | max_x_dist | score | What happened |
 |------|-----|-----------|-------------|------------|-------|---------------|
@@ -42,7 +42,7 @@ total_reward = 10000 + (400 − seconds_to_finish) + score + max_x_dist   (level
 
 The level was **never completed in the greedy evaluation**. However, PPO stochastic workers (temperature-sampled) completed the level multiple times during training (train_best_reward ≈ 17 000–21 000), which proves the level is solvable by the policy class — the remaining challenge is getting the *greedy* argmax to agree.
 
-## How total_reward evolved
+### How total_reward evolved
 
 ```
 Exp   1  (DQN, baseline)          total =  434   x =  434
@@ -58,7 +58,7 @@ Exp 185  (PPO T=0.3 LR=3e-6)      total = 1719   x = 1519  ← PPO past x=899
 Exp 192  (PPO T=0.5 LR=3e-6)      total = 2221   x = 1521  ← PPO best
 ```
 
-## Algorithms tried
+### Algorithms tried
 
 **Dueling DQN (exp 1–120)** — the workhorse of the first half:
 - Architecture: 3-layer CNN shared trunk, separate advantage + value streams
@@ -74,7 +74,7 @@ Exp 192  (PPO T=0.5 LR=3e-6)      total = 2221   x = 1521  ← PPO best
 - Key hyperparameter discoveries: SAMPLE_TEMP=0.3–0.5, LR=3e-6, frozen conv+policy[:2], finally-block save
 - Techniques tried: Behavioural Cloning from flag-get episodes, KL-anchored updates, advantage masking, frontier filtering, temperature annealing
 
-## Key discoveries
+### Key discoveries
 
 **1. Pure-greedy self-training compounds (DQN)**  
 Setting all workers to ε=0 and LR=1e-5 focuses every gradient step on the best-known path. Used twice for large jumps: x=723→1439 (exp 74) and x=1137→2023 (exp 80). The limitation is that it cannot discover new paths — it needs a separate exploration phase first.
@@ -94,7 +94,7 @@ PPO with temperature sampling (T=0.5–0.7) reliably solves the level within 10 
 **6. The safe learning-rate threshold is checkpoint-dependent**  
 The maximum LR that avoids greedy-policy corruption rises and falls with each new checkpoint. At x=899: LR=1e-6 safe, LR=3e-6 corrupts. At x=1519: LR=3e-6 sometimes works. At x=2221: LR=2e-6 already corrupts. Each improvement raises the sensitivity of the policy and lowers the safe LR ceiling.
 
-## What did not work
+### What did not work
 
 | Approach | Why it failed |
 |----------|--------------|
@@ -121,11 +121,11 @@ The maximum LR that avoids greedy-policy corruption rises and falls with each ne
 
 ---
 
-# Outlook
+## Outlook
 
 The experiments surfaced a set of clear, tractable problems. Each section below states the problem, explains why it matters, and sketches a concrete approach.
 
-## 1. Bridge the stochastic–greedy gap to complete the level
+### 1. Bridge the stochastic–greedy gap to complete the level
 
 **Problem:** PPO stochastic workers complete Mario 1-1 reliably within 10 minutes. The greedy policy reaches only x≈1521. Closing this gap would unlock the 10 000-point completion bonus — a 4× improvement over the current best.
 
@@ -137,7 +137,7 @@ The experiments surfaced a set of clear, tractable problems. Each section below 
 - *Completion-episode distillation.* Every time a stochastic worker completes the level, record the full trajectory. After training, run a second pass where the policy is trained via supervised cross-entropy (`argmax = completed_action`) on these trajectories only, using a frozen CNN. Because the training data contains only winning paths, the greedy policy learns to copy them.
 - *Population-based evaluation.* Keep a ring buffer of the last N completed-level trajectories. Use these as the "greedy evaluation" target: a checkpoint is saved only when it reproduces ≥1 trajectory in the greedy eval. This rewards policies that have internalised level completion, not just those that have the highest average x.
 
-## 2. Fix the checkpoint overwrite problem permanently
+### 2. Fix the checkpoint overwrite problem permanently
 
 **Problem:** Three separate experiments (exp 77, exp 92, exp 177) lost hard-earned checkpoints because the save criterion compared against a stale or just-reinitialised baseline rather than the global all-time best. Recovery required starting from scratch and cost many experiments.
 
@@ -159,7 +159,7 @@ if new_combined > global_best_combined:
 
 Keeping `global_best.pt` separate from the working `model.pt` means training can reinitialise or experiment freely without touching the historical best. A secondary benefit: the researcher always knows the true ceiling and can target it explicitly.
 
-## 3. Per-barrier curriculum with isolated sub-policies
+### 3. Per-barrier curriculum with isolated sub-policies
 
 **Problem:** The shared linear output layer couples all positions. Any gradient for x>1521 also changes the argmax at x=303 and x=722 — leading to corruption. This shared-weight coupling is the single most common failure mode across 203 experiments.
 
@@ -171,7 +171,7 @@ Keeping `global_best.pt` separate from the working `model.pt` means training can
 - *Modular residual heads.* The current `beyond_head` (a zero-init residual added on top of policy[-1]) is a step in this direction but still fails because its features are correlated with all x positions. A better design: assign one beyond_head per zone, with a hard mask ensuring zone k's head only receives gradient from zone k transitions.
 - *Separate specialist networks.* Train a specialist model for the barrier region only (e.g. last 200 frames before x=1521), warm-starting its CNN from the main model but keeping its own output head. Use the main model for x<1400 and switch to the specialist near the barrier. Ensemble or gate the outputs at the junction.
 
-## 4. Smarter reward shaping
+### 4. Smarter reward shaping
 
 **Problem:** The current reward (`Δx × 2 + Δscore × 0.3 − 0.1/step`) has worked but has two known weaknesses: (a) the score delta coefficient was found empirically and is likely suboptimal, and (b) there is no signal guiding the agent *toward* a specific obstacle when it is stuck.
 
@@ -183,7 +183,7 @@ Keeping `global_best.pt` separate from the working `model.pt` means training can
 - *Adaptive barrier bonus.* Instead of a one-time bonus at a fixed x, use a rolling bonus: `bonus = k × max(0, x − rolling_max_x)`. Every new personal best for that worker earns a reward proportional to how far past the frontier it went. This continuously incentivises exploration without the "barrier already crossed, bonus spent" problem.
 - *Intrinsic curiosity for score.* Mario's score items (coins, enemies) are clustered in known locations. Adding a small curiosity reward based on whether a new score event occurred (rather than magnitude) would incentivise the agent to find *new* score opportunities rather than replaying the same coin block over and over.
 
-## 5. Architecture improvements
+### 5. Architecture improvements
 
 **Problem:** The current CNN (Conv 8×8/4 → Conv 4×4/2 → Conv 3×3/1 → FC 3136→512) was designed for Atari in 2015 ([DQN Nature paper](https://www.nature.com/articles/nature14236)). It has no temporal memory beyond 4 stacked frames and no skip connections to preserve fine-grained spatial detail.
 
@@ -195,7 +195,7 @@ Keeping `global_best.pt` separate from the working `model.pt` means training can
 - *Deeper CNN with skip connections.* Add residual skip connections between conv layers 1 and 3. This has two benefits: (a) gradients flow more directly to early layers (less vanishing), (b) fine-grained pixel-level features from layer 1 are concatenated with higher-level semantic features from layer 3, giving the FC head both resolution and abstraction. Demonstrated to help in [IMPALA (Espeholt et al. 2018)](https://arxiv.org/abs/1802.01561).
 - *Larger frame stack (k=8) with evaluate.py fix.* k=8 (covering ~133 ms) was tried in exp 88 but crashed because evaluate.py hardcodes k=4. Patching evaluate.py (or adding a model metadata header to checkpoint files so evaluate.py can auto-detect k) would unlock this. A proper ablation comparing k=4 vs k=8 with otherwise identical settings has never been done.
 
-## 6. Alternative RL algorithms
+### 6. Alternative RL algorithms
 
 Several modern algorithms offer structural advantages over DQN and vanilla PPO for this problem.
 
@@ -211,7 +211,7 @@ MuZero ([Schrittwieser et al. 2020](https://www.nature.com/articles/s41586-020-0
 **Go-Explore**  
 Go-Explore ([Ecoffet et al. 2021](https://www.nature.com/articles/s41586-021-03528-y)) addresses hard-exploration problems by explicitly archiving visited states and returning to them deterministically for further exploration — exactly the use case here. It would archive the state just before x=1521, then systematically try all actions from that state in a separate exploration phase, keeping any that advance further. No replay buffer corruption, no gradient entanglement.
 
-## 7. Longer training runs and multi-session accumulation
+### 7. Longer training runs and multi-session accumulation
 
 **Problem:** Each experiment has a hard 10-minute wall-clock limit. The most successful PPO improvements (exp 185, 190, 192) were captured by the finally-block, suggesting the model was *still improving* when training stopped.
 
