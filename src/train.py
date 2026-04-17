@@ -18,12 +18,13 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from src.constants import TIME_BUDGET, MAX_EPISODE_STEPS, PRO_MOVEMENT
 from src.model import PolicyModel
 
-# PPO T=0.3 + LR=1e-6 + reinit value_head run 2 (exp165)
-# exp164 gave 1398→1699 (score 500→800), stable peak 2x in a row.
-# Run again from 1699 to continue building on this approach.
+# PPO T=0.3 + LR=3e-6 + reinit value_head (exp166)
+# exp165 was stable at 1699 (no degradation) but no improvement.
+# Try LR=3e-6 (3x faster than exp164's LR=1e-6) to accumulate improvements faster
+# while hopefully still below the corruption threshold.
 N_WORKERS = 8
 N_STEPS = 128
-LR = 1e-6              # very tiny — changes too small to flip x=303 greedy action
+LR = 3e-6
 MAX_GRAD_NORM = 0.5
 
 # PPO
