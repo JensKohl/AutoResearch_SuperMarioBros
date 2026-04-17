@@ -18,10 +18,11 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from src.constants import TIME_BUDGET, MAX_EPISODE_STEPS, PRO_MOVEMENT
 from src.model import PolicyModel
 
-# PPO TEMP=0.3 + KL anchor from x=1299 (exp155)
-# exp154 showed TEMP=0.3 works (x=722→899, total_reward=1299). Still oscillates
-# between x=303 and x=898. Add KL anchor from the new x=1299 model to reduce
-# x=302 crashes while preserving the temperature-induced x=898+ peaks.
+# PPO ultra-low-temperature sampling from x=1299 (exp156)
+# exp154 TEMP=0.3 worked (x=899), but still oscillated x=303↔x=898.
+# TEMP=0.1 makes workers near-identical to greedy (almost always follow x=899 path).
+# Fewer x=303 failures → PPO sees mostly x=899 trajectories → stable reinforcement.
+# Also add second barrier at x=1100 with higher bonus to push past x=899.
 N_WORKERS = 8
 N_STEPS = 128
 LR = 2e-5
@@ -29,7 +30,7 @@ MAX_GRAD_NORM = 0.5
 
 # PPO
 CLIP_EPS = 0.10
-ENTROPY_COEF = 0.005
+ENTROPY_COEF = 0.001   # minimal entropy at TEMP=0.1
 VALUE_COEF = 0.5
 GAE_GAMMA = 0.99
 GAE_LAMBDA = 0.95
@@ -37,11 +38,11 @@ PPO_EPOCHS = 1
 MINI_BATCH = 256
 GREEDY_CHECK_ROLLOUTS = 2
 
-SAMPLE_TEMP = 0.3      # near-greedy workers prevent x=302 degradation
-KL_COEF = 0.3          # light KL anchor from x=1299 model to reduce oscillation
-
-BARRIER_X = 1100       # push past x=899 now that we can reach it
+SAMPLE_TEMP = 0.1      # near-greedy: workers replicate the x=899 greedy trajectory
+BARRIER_X = 899
 BARRIER_BONUS = 750.0
+BARRIER2_X = 1100
+BARRIER2_BONUS = 1000.0  # stronger pull past x=899
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 warnings.filterwarnings("ignore")
@@ -120,16 +121,18 @@ class FrameStack(gym.Wrapper):
 
 
 class DistanceReward(gym.Wrapper):
-    """Distance-based reward with barrier bonus for first crossing x=BARRIER_X."""
+    """Distance-based reward with two barrier bonuses for first crossing x=BARRIER_X and x=BARRIER2_X."""
     def __init__(self, env, barrier_bonus=0.0):
         super().__init__(env)
         self.curr_x = 0
         self.barrier_crossed = False
+        self.barrier2_crossed = False
         self.barrier_bonus = barrier_bonus
 
     def reset(self, **kwargs):
         self.curr_x = 0
         self.barrier_crossed = False
+        self.barrier2_crossed = False
         return self.env.reset(**kwargs)
 
     def step(self, action):
@@ -141,6 +144,9 @@ class DistanceReward(gym.Wrapper):
         if self.barrier_bonus > 0 and x_pos > BARRIER_X and not self.barrier_crossed:
             reward += self.barrier_bonus
             self.barrier_crossed = True
+        if x_pos > BARRIER2_X and not self.barrier2_crossed:
+            reward += BARRIER2_BONUS
+            self.barrier2_crossed = True
         if info.get('flag_get', False):
             reward += 1000.0
         return obs, reward, terminated, truncated, info
@@ -228,14 +234,6 @@ def train():
             print(f"Warm start: loaded model from {model_path}")
         except Exception as e:
             print(f"Load failed ({e}), starting fresh")
-
-    # KL reference model: frozen copy of warm-start checkpoint
-    ref_model = PolicyModel(n_actions).to(device)
-    ref_model.load_state_dict(model.state_dict())
-    for p in ref_model.parameters():
-        p.requires_grad = False
-    ref_model.eval()
-    print(f"KL reference loaded (KL_COEF={KL_COEF})")
 
     best_greedy_x, best_greedy_score = greedy_eval_x(model)
     best_combined = best_greedy_x + best_greedy_score
@@ -351,15 +349,7 @@ def train():
                     surr2 = torch.clamp(ratio, 1 - CLIP_EPS, 1 + CLIP_EPS) * mb_adv
                     policy_loss = -torch.min(surr1, surr2).mean()
                     value_loss = VALUE_COEF * F.mse_loss(vals.squeeze(1), mb_ret)
-
-                    # KL(π||π_ref): light penalty to anchor policy to x=1299 reference
-                    with torch.no_grad():
-                        ref_logits = ref_model(mb_s)
-                        ref_probs = torch.softmax(ref_logits, dim=1)
-                    curr_probs = torch.softmax(logits, dim=1)
-                    kl_loss = (curr_probs * (torch.log(curr_probs + 1e-8) - torch.log(ref_probs + 1e-8))).sum(1).mean()
-
-                    loss = policy_loss + value_loss - ENTROPY_COEF * entropy + KL_COEF * kl_loss
+                    loss = policy_loss + value_loss - ENTROPY_COEF * entropy
 
                     optimizer.zero_grad()
                     loss.backward()
