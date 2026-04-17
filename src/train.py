@@ -18,12 +18,10 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from src.constants import TIME_BUDGET, MAX_EPISODE_STEPS, PRO_MOVEMENT
 from src.model import PolicyModel
 
-# PPO + score_delta reward + T=0.5 + LR=3e-6 (exp194)
-# Add score_delta*0.3 to training reward — evaluate.py counts score equally to x_dist.
-# Model currently ignores coins; adding score incentive may improve evaluate.py metric.
+# PPO T=0.7 + LR=5e-6 (exp195) — push harder past x=1521 with bolder config.
 N_WORKERS = 8
 N_STEPS = 128
-LR = 3e-6
+LR = 5e-6
 MAX_GRAD_NORM = 0.5
 
 # PPO
@@ -36,7 +34,7 @@ PPO_EPOCHS = 1
 MINI_BATCH = 256
 GREEDY_CHECK_ROLLOUTS = 2
 
-SAMPLE_TEMP = 0.5      # more exploration past x=1523
+SAMPLE_TEMP = 0.7      # more exploration past x=1521
 
 BARRIER_X = 1521
 BARRIER_BONUS = 750.0
