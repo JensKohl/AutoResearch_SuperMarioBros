@@ -18,8 +18,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from src.constants import TIME_BUDGET, MAX_EPISODE_STEPS, PRO_MOVEMENT
 from src.model import PolicyModel
 
-# PPO T=0.3 + LR=3e-6 run 2 (exp191)
-# exp190 jumped to x=1523 score=400. Continue same config from new checkpoint.
+# PPO T=0.5 + LR=3e-6 (exp192) — more exploration with same LR that produced jumps.
 N_WORKERS = 8
 N_STEPS = 128
 LR = 3e-6
@@ -35,7 +34,7 @@ PPO_EPOCHS = 1
 MINI_BATCH = 256
 GREEDY_CHECK_ROLLOUTS = 2
 
-SAMPLE_TEMP = 0.3      # near-greedy workers
+SAMPLE_TEMP = 0.5      # more exploration past x=1523
 
 BARRIER_X = 1523
 BARRIER_BONUS = 750.0
