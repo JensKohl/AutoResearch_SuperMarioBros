@@ -47,6 +47,9 @@ class PolicyModel(nn.Module):
         return self.policy[-1](features) + self.beyond_head(features)
 
     def full_forward(self, x):
-        """Returns (logits, value) used during PPO training."""
+        """Returns (logits, value) used during PPO training.
+        Includes beyond_head so PPO trains the residual head correctly."""
         f = self.conv(x).view(x.size(0), -1)
-        return self.policy(f), self.value_head(f)
+        features = self.policy[:2](f)
+        logits = self.policy[-1](features) + self.beyond_head(features)
+        return logits, self.value_head(f)

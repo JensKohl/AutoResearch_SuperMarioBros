@@ -18,28 +18,25 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from src.constants import TIME_BUDGET, MAX_EPISODE_STEPS, PRO_MOVEMENT
 from src.model import PolicyModel
 
-# PPO + selective KL hyperparameters (exp146)
-# KL penalty applied ONLY to states where x_pos < KL_PROTECT_X (early-game).
-# States near the barrier (x>=800) are unanchored — PPO can freely learn to jump.
-# exp144 (KL=1.0 everywhere) anchored too strongly; exp145 (KL=0.3 everywhere) oscillated.
+# PPO + beyond_head only hyperparameters (exp147)
+# Train ONLY beyond_head (zero-init residual) + value_head with PPO.
+# policy[-1] is completely frozen — greedy behavior for x<899 is perfectly preserved.
+# full_forward now includes beyond_head so PPO trains the right logits.
+# beyond_head starts at zero (no-op), learns only the delta needed at x=899.
 N_WORKERS = 8
 N_STEPS = 128
-LR = 2e-5
+LR = 5e-5              # slightly higher since beyond_head starts at 0 and needs to learn
 MAX_GRAD_NORM = 0.5
 
 # PPO
-CLIP_EPS = 0.10
+CLIP_EPS = 0.15
 ENTROPY_COEF = 0.01
 VALUE_COEF = 0.5
 GAE_GAMMA = 0.99
 GAE_LAMBDA = 0.95
-PPO_EPOCHS = 1
+PPO_EPOCHS = 2
 MINI_BATCH = 256
 GREEDY_CHECK_ROLLOUTS = 2
-
-# Selective KL: protect early-game (x < KL_PROTECT_X) but allow learning near barrier.
-KL_COEF = 1.0          # strong anchor for early-game states
-KL_PROTECT_X = 800     # only apply KL for states where x_pos < 800
 
 # Reward: large bonus for first time crossing x=899 barrier per episode.
 BARRIER_X = 899
@@ -209,22 +206,19 @@ def train():
     n_actions = envs[0].action_space.n
     model = PolicyModel(n_actions).to(device)
 
-    # Freeze conv and policy[0] — only train policy[-1] and value_head.
-    # This minimizes early-game feature degradation while allowing the output
-    # layer to learn to prefer jumping at x=899.
+    # Freeze conv, policy[:2], and policy[-1] — train ONLY beyond_head + value_head.
+    # policy[-1] frozen means early-game logits are perfectly protected.
+    # beyond_head starts at zero (no-op) and learns the delta for x=899 jump.
     for p in model.conv.parameters():
         p.requires_grad = False
-    for p in model.policy[:2].parameters():
-        p.requires_grad = False
-    for p in model.beyond_head.parameters():
+    for p in model.policy.parameters():
         p.requires_grad = False
 
-    trainable = list(model.policy[-1].parameters()) + list(model.value_head.parameters())
+    trainable = list(model.beyond_head.parameters()) + list(model.value_head.parameters())
     optimizer = optim.Adam(trainable, lr=LR, eps=1e-5)
 
     model_path = "MODELS/model.pt"
     model_saved = False
-    ref_model = None  # frozen reference for KL penalty
     if os.path.exists(model_path):
         try:
             saved = torch.load(model_path, map_location=device)
@@ -237,13 +231,6 @@ def train():
                 model_dict.update(conv_weights)
                 model.load_state_dict(model_dict)
                 print(f"Warm start: loaded CNN from DQN checkpoint, fresh policy/value heads")
-            # Build frozen reference model for KL penalty
-            ref_model = PolicyModel(n_actions).to(device)
-            ref_model.load_state_dict(model.state_dict())
-            for p in ref_model.parameters():
-                p.requires_grad = False
-            ref_model.eval()
-            print("KL reference model frozen from warm-start checkpoint.")
         except Exception as e:
             print(f"Warm start failed ({e}), starting fresh")
 
@@ -268,7 +255,6 @@ def train():
             rewards_buf = []
             dones_buf = []
             values_buf = []
-            xpos_buf = []   # track x_pos for selective KL
 
             for step in range(N_STEPS):
                 states_t = torch.FloatTensor(
@@ -290,7 +276,6 @@ def train():
                 next_states = []
                 rewards_step = []
                 dones_step = []
-                xpos_step = []
 
                 for i in range(N_WORKERS):
                     ns, r, term, trunc, info = envs[i].step(actions[i].item())
@@ -298,7 +283,6 @@ def train():
                     ep_rewards[i] += r
                     rewards_step.append(r)
                     dones_step.append(float(done))
-                    xpos_step.append(info.get('x_pos', 0))
 
                     ct = info.get('time', 0) + info.get('score', 0)
                     if ct > best_total_reward:
@@ -314,7 +298,6 @@ def train():
 
                 rewards_buf.append(torch.tensor(rewards_step, dtype=torch.float32))
                 dones_buf.append(torch.tensor(dones_step, dtype=torch.float32))
-                xpos_buf.append(torch.tensor(xpos_step, dtype=torch.float32))
                 states = next_states
 
             # ── GAE ──────────────────────────────────────────────────────────────
@@ -340,7 +323,6 @@ def train():
             LP = torch.stack(log_probs_buf).view(-1)
             ADV = advantages.view(-1)
             RET = returns.view(-1)
-            XP = torch.stack(xpos_buf).view(-1)   # x_pos for selective KL
             ADV = (ADV - ADV.mean()) / (ADV.std() + 1e-8)
 
             # ── PPO update ───────────────────────────────────────────────────────
@@ -354,7 +336,6 @@ def train():
                     mb_lp = LP[mb].to(device)
                     mb_adv = ADV[mb].to(device)
                     mb_ret = RET[mb].to(device)
-                    mb_xp = XP[mb]  # x_pos for selective KL mask
 
                     logits, vals = model.full_forward(mb_s)
                     dist = torch.distributions.Categorical(torch.softmax(logits, dim=1))
@@ -366,24 +347,7 @@ def train():
                     surr2 = torch.clamp(ratio, 1 - CLIP_EPS, 1 + CLIP_EPS) * mb_adv
                     policy_loss = -torch.min(surr1, surr2).mean()
                     value_loss = VALUE_COEF * F.mse_loss(vals.squeeze(1), mb_ret)
-
-                    # Selective KL: protect early-game (x < KL_PROTECT_X) only.
-                    # Near-barrier states (x >= KL_PROTECT_X) are unanchored — PPO
-                    # can freely learn the jump action there.
-                    if ref_model is not None:
-                        early_mask = (mb_xp < KL_PROTECT_X)
-                        if early_mask.any():
-                            mb_s_early = mb_s[early_mask]
-                            with torch.no_grad():
-                                ref_logits = ref_model(mb_s_early)
-                            curr_log_probs = F.log_softmax(logits[early_mask], dim=1)
-                            kl = F.kl_div(curr_log_probs, F.softmax(ref_logits, dim=1),
-                                          reduction='batchmean')
-                            loss = policy_loss + value_loss - ENTROPY_COEF * entropy + KL_COEF * kl
-                        else:
-                            loss = policy_loss + value_loss - ENTROPY_COEF * entropy
-                    else:
-                        loss = policy_loss + value_loss - ENTROPY_COEF * entropy
+                    loss = policy_loss + value_loss - ENTROPY_COEF * entropy
 
                     optimizer.zero_grad()
                     loss.backward()
