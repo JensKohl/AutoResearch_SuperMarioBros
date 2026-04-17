@@ -18,11 +18,11 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from src.constants import TIME_BUDGET, MAX_EPISODE_STEPS, PRO_MOVEMENT
 from src.model import PolicyModel
 
-# PPO BARRIER_X=1520 + T=0.5 + LR=1e-6 (exp189)
-# Advance barrier to new frontier x=1520. Continue same approach.
+# PPO T=0.3 + LR=3e-6 from x=1520 (exp190)
+# T=0.3+LR=3e-6 pushed x=723->898->1519. Try from x=1520 — might improve before corrupting.
 N_WORKERS = 8
 N_STEPS = 128
-LR = 1e-6
+LR = 3e-6
 MAX_GRAD_NORM = 0.5
 
 # PPO
@@ -35,7 +35,7 @@ PPO_EPOCHS = 1
 MINI_BATCH = 256
 GREEDY_CHECK_ROLLOUTS = 2
 
-SAMPLE_TEMP = 0.5      # workers cross x=1519 regularly
+SAMPLE_TEMP = 0.3      # near-greedy workers
 
 BARRIER_X = 1520
 BARRIER_BONUS = 750.0
