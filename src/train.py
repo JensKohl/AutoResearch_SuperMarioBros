@@ -18,26 +18,26 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from src.constants import TIME_BUDGET, MAX_EPISODE_STEPS, PRO_MOVEMENT
 from src.model import PolicyModel
 
-# PPO continued from x=679 (exp151)
-# Continue from exp150 checkpoint (x=679). Learning curve shows progress — push to x=898+.
-# Lower LR now that we have a decent policy; keep barrier bonus for x=899 crossing.
+# PPO conservative from x=722 (exp152)
+# Model peaked x=722 in exp151 then degraded. Ultra-conservative PPO to hold ground
+# and catch improvements early. Check every 2 rollouts to capture brief peaks.
 N_WORKERS = 8
 N_STEPS = 128
-LR = 5e-5              # reduced from 1e-4 — policy stabilizing, need careful updates
+LR = 2e-5              # very low — minimize degradation
 MAX_GRAD_NORM = 0.5
 
 # PPO
-CLIP_EPS = 0.15
+CLIP_EPS = 0.10
 ENTROPY_COEF = 0.01
 VALUE_COEF = 0.5
 GAE_GAMMA = 0.99
 GAE_LAMBDA = 0.95
-PPO_EPOCHS = 4
+PPO_EPOCHS = 1         # minimal updates per rollout
 MINI_BATCH = 256
-GREEDY_CHECK_ROLLOUTS = 4
+GREEDY_CHECK_ROLLOUTS = 2  # very frequent — catch brief peaks
 
 BARRIER_X = 899
-BARRIER_BONUS = 500.0
+BARRIER_BONUS = 750.0  # stronger bonus to push past x=899
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 warnings.filterwarnings("ignore")
