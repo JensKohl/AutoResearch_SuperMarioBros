@@ -18,11 +18,12 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from src.constants import TIME_BUDGET, MAX_EPISODE_STEPS, PRO_MOVEMENT
 from src.model import PolicyModel
 
-# PPO T=0.5 + fresh barrier at x=1000 (exp158)
-# From x=1299 (already at x=899), every approach degrades immediately.
-# Root cause: model already knows x=899 path. Barrier bonus at x=899 is
-# "expected reward" — workers get it every episode, no gradient to go further.
-# Fix: move barrier to x=1000 (new frontier) + T=0.5 (more exploration past x=899).
+# PPO T=0.3 + advantage masking (exp159)
+# From x=1299: all approaches degrade to x=303. Root cause:
+# ~5% of T=0.3 episodes die at x=303, generating negative advantages that corrupt
+# the x=303 greedy decision. Fix: track per-worker episode max_x and MASK OUT
+# advantages for steps from episodes that never reached FILTER_X=800.
+# Only train on successful (x>800) trajectories — eliminates poisonous data.
 N_WORKERS = 8
 N_STEPS = 128
 LR = 2e-5
@@ -30,7 +31,7 @@ MAX_GRAD_NORM = 0.5
 
 # PPO
 CLIP_EPS = 0.10
-ENTROPY_COEF = 0.01    # slightly higher entropy to encourage exploration past x=899
+ENTROPY_COEF = 0.005
 VALUE_COEF = 0.5
 GAE_GAMMA = 0.99
 GAE_LAMBDA = 0.95
@@ -38,9 +39,10 @@ PPO_EPOCHS = 1
 MINI_BATCH = 256
 GREEDY_CHECK_ROLLOUTS = 2
 
-SAMPLE_TEMP = 0.5      # more exploration to find x>899 paths
+SAMPLE_TEMP = 0.3      # near-greedy workers generate x=899 trajectories
+FILTER_X = 800         # only train on episodes where worker reached x>FILTER_X
 
-BARRIER_X = 1000       # new frontier — creates gradient pressure to go past x=899
+BARRIER_X = 899
 BARRIER_BONUS = 750.0
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -241,6 +243,10 @@ def train():
     best_score = 0
     best_time = 0
 
+    # Per-worker episode max_x tracking for advantage masking
+    ep_max_x = [0] * N_WORKERS
+    ep_step_start = [0] * N_WORKERS  # step index where current episode started
+
     try:
         while time.time() - start_time < TIME_BUDGET:
             # ── Collect rollout ──────────────────────────────────────────────────
@@ -250,6 +256,11 @@ def train():
             rewards_buf = []
             dones_buf = []
             values_buf = []
+            success_buf = []  # per-step success flag (set retroactively after episode ends)
+
+            # Track per-episode success for masking: list of (start_step, end_step, success)
+            episode_spans = []  # (worker_i, start_step, end_step, max_x)
+            current_ep_start = list(ep_step_start)  # copy
 
             for step in range(N_STEPS):
                 states_t = torch.FloatTensor(
@@ -258,8 +269,6 @@ def train():
 
                 with torch.no_grad():
                     logits, values = model.full_forward(states_t)
-                    # Low-temperature sampling: workers act near-greedy to
-                    # generate useful x=700+ trajectories (not x=302 noise)
                     probs = torch.softmax(logits / SAMPLE_TEMP, dim=1)
                     dist = torch.distributions.Categorical(probs)
                     actions = dist.sample()
@@ -269,6 +278,7 @@ def train():
                 actions_buf.append(actions.cpu())
                 log_probs_buf.append(log_probs.cpu())
                 values_buf.append(values.squeeze(1).cpu())
+                success_buf.append(torch.ones(N_WORKERS))  # default: include (set below)
 
                 next_states = []
                 rewards_step = []
@@ -281,6 +291,9 @@ def train():
                     rewards_step.append(r)
                     dones_step.append(float(done))
 
+                    x_pos = info.get('x_pos', 0)
+                    ep_max_x[i] = max(ep_max_x[i], x_pos)
+
                     ct = info.get('time', 0) + info.get('score', 0)
                     if ct > best_total_reward:
                         best_total_reward = ct
@@ -288,14 +301,29 @@ def train():
                         best_time = info.get('time', 0)
 
                     if done:
+                        episode_spans.append((i, current_ep_start[i], step, ep_max_x[i]))
                         total_ep_rewards.append(ep_rewards[i])
                         ep_rewards[i] = 0.0
+                        ep_max_x[i] = 0
+                        current_ep_start[i] = step + 1
                         ns = envs[i].reset()[0]
                     next_states.append(ns)
 
                 rewards_buf.append(torch.tensor(rewards_step, dtype=torch.float32))
                 dones_buf.append(torch.tensor(dones_step, dtype=torch.float32))
                 states = next_states
+
+            # Retroactively mark steps from failed episodes (max_x < FILTER_X) as masked
+            # Build a mask tensor: 1.0=use, 0.0=mask out
+            mask = torch.ones(N_STEPS, N_WORKERS)
+            for (worker_i, start_s, end_s, max_x) in episode_spans:
+                if max_x < FILTER_X:
+                    mask[start_s:end_s + 1, worker_i] = 0.0
+            # Also mask out any in-progress episodes at end of rollout
+            for i in range(N_WORKERS):
+                if ep_max_x[i] < FILTER_X and current_ep_start[i] < N_STEPS:
+                    mask[current_ep_start[i]:, i] = 0.0
+            ep_step_start = [current_ep_start[i] - N_STEPS for i in range(N_WORKERS)]  # not needed further
 
             # ── GAE ──────────────────────────────────────────────────────────────
             with torch.no_grad():
@@ -319,7 +347,16 @@ def train():
             LP = torch.stack(log_probs_buf).view(-1)
             ADV = advantages.view(-1)
             RET = returns.view(-1)
-            ADV = (ADV - ADV.mean()) / (ADV.std() + 1e-8)
+            MASK = mask.view(-1)
+
+            # Apply advantage masking: zero out steps from failed episodes (x<FILTER_X).
+            # Normalise only over non-masked steps to avoid bias.
+            ADV = ADV * MASK
+            nonzero = MASK.sum()
+            if nonzero > 0:
+                masked_mean = (ADV * MASK).sum() / nonzero
+                masked_std = (((ADV - masked_mean) ** 2 * MASK).sum() / nonzero).sqrt() + 1e-8
+                ADV = (ADV - masked_mean) / masked_std * MASK  # keep zeros at zero
 
             # ── PPO update ───────────────────────────────────────────────────────
             n = len(S)
@@ -332,17 +369,18 @@ def train():
                     mb_lp = LP[mb].to(device)
                     mb_adv = ADV[mb].to(device)
                     mb_ret = RET[mb].to(device)
+                    mb_mask = MASK[mb].to(device)
 
                     logits, vals = model.full_forward(mb_s)
                     dist = torch.distributions.Categorical(torch.softmax(logits / SAMPLE_TEMP, dim=1))
                     new_lp = dist.log_prob(mb_a)
-                    entropy = dist.entropy().mean()
+                    entropy = (dist.entropy() * mb_mask).sum() / (mb_mask.sum() + 1e-8)
 
                     ratio = torch.exp(new_lp - mb_lp)
                     surr1 = ratio * mb_adv
                     surr2 = torch.clamp(ratio, 1 - CLIP_EPS, 1 + CLIP_EPS) * mb_adv
-                    policy_loss = -torch.min(surr1, surr2).mean()
-                    value_loss = VALUE_COEF * F.mse_loss(vals.squeeze(1), mb_ret)
+                    policy_loss = -(torch.min(surr1, surr2) * mb_mask).sum() / (mb_mask.sum() + 1e-8)
+                    value_loss = VALUE_COEF * ((vals.squeeze(1) - mb_ret) ** 2 * mb_mask).sum() / (mb_mask.sum() + 1e-8)
                     loss = policy_loss + value_loss - ENTROPY_COEF * entropy
 
                     optimizer.zero_grad()
