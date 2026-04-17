@@ -18,29 +18,28 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from src.constants import TIME_BUDGET, MAX_EPISODE_STEPS, PRO_MOVEMENT
 from src.model import PolicyModel
 
-# PPO N_WORKERS=16 + BARRIER_BONUS=2000 + frontier filter x>800 (exp178)
-# More workers → more x>899 data. BARRIER_BONUS=2000 → stronger gradient. Frontier
-# filter ensures gradient focuses on x=899 bottleneck. LR=1e-6 stays safe.
-N_WORKERS = 16
+# PPO standard LR=3e-4 + all unfrozen (exp179)
+# Model reset to x=595 (policy head fresh). Standard Atari PPO hyperparams for fast relearn.
+# Silver lining: fresh policy head has no x=899 ceiling baked in — may push past it.
+N_WORKERS = 8
 N_STEPS = 128
-LR = 1e-6
+LR = 3e-4
 MAX_GRAD_NORM = 0.5
 
 # PPO
-CLIP_EPS = 0.10
-ENTROPY_COEF = 0.005
+CLIP_EPS = 0.2
+ENTROPY_COEF = 0.01
 VALUE_COEF = 0.5
 GAE_GAMMA = 0.99
 GAE_LAMBDA = 0.95
-PPO_EPOCHS = 1
+PPO_EPOCHS = 4
 MINI_BATCH = 256
-GREEDY_CHECK_ROLLOUTS = 2
+GREEDY_CHECK_ROLLOUTS = 4
 
-SAMPLE_TEMP = 0.5      # workers cross x=899 regularly
+SAMPLE_TEMP = 1.0      # standard temperature
 
 BARRIER_X = 899
-BARRIER_BONUS = 2000.0
-FRONTIER_X = 800       # only train on x>800 transitions
+BARRIER_BONUS = 750.0
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 warnings.filterwarnings("ignore")
@@ -206,13 +205,16 @@ def train():
     n_actions = envs[0].action_space.n
     model = PolicyModel(n_actions).to(device)
 
-    # Freeze conv + policy[:2] + beyond_head. Train policy[-1] + value_head.
+    # Freeze conv + policy[:2] + beyond_head.
+    # Train policy[-1] + value_head. Reinitialize value_head fresh so it
+    # doesn't overestimate x=899 states and generate negative advantages.
     for p in model.conv.parameters():
         p.requires_grad = False
     for p in model.policy[:2].parameters():
         p.requires_grad = False
     for p in model.beyond_head.parameters():
         p.requires_grad = False
+
     trainable = list(model.policy[-1].parameters()) + list(model.value_head.parameters())
     optimizer = optim.Adam(trainable, lr=LR, eps=1e-5)
 
@@ -226,10 +228,12 @@ def train():
         except Exception as e:
             print(f"Load failed ({e}), starting fresh")
 
-    # Reinit value_head for fresh advantage estimates
+    # Reinitialize value_head: prevents stale over-estimates of x=899 states
+    # causing negative advantages that push the policy away from x=899.
     for m in model.value_head:
         if hasattr(m, 'reset_parameters'):
             m.reset_parameters()
+    print("Value head reinitialized (fresh advantage estimates)")
 
     best_greedy_x, best_greedy_score = greedy_eval_x(model)
     best_combined = best_greedy_x + best_greedy_score
@@ -252,9 +256,6 @@ def train():
             rewards_buf = []
             dones_buf = []
             values_buf = []
-            xpos_buf = []
-
-            worker_xpos = [0] * N_WORKERS
 
             for step in range(N_STEPS):
                 states_t = torch.FloatTensor(
@@ -272,7 +273,6 @@ def train():
                 actions_buf.append(actions.cpu())
                 log_probs_buf.append(log_probs.cpu())
                 values_buf.append(values.squeeze(1).cpu())
-                xpos_buf.append(list(worker_xpos))
 
                 next_states = []
                 rewards_step = []
@@ -284,7 +284,6 @@ def train():
                     ep_rewards[i] += r
                     rewards_step.append(r)
                     dones_step.append(float(done))
-                    worker_xpos[i] = info.get('x_pos', 0)
 
                     ct = info.get('time', 0) + info.get('score', 0)
                     if ct > best_total_reward:
@@ -296,7 +295,6 @@ def train():
                         total_ep_rewards.append(ep_rewards[i])
                         ep_rewards[i] = 0.0
                         ns = envs[i].reset()[0]
-                        worker_xpos[i] = 0
                     next_states.append(ns)
 
                 rewards_buf.append(torch.tensor(rewards_step, dtype=torch.float32))
@@ -327,26 +325,10 @@ def train():
             RET = returns.view(-1)
             ADV = (ADV - ADV.mean()) / (ADV.std() + 1e-8)
 
-            # Frontier filter: only train on x>FRONTIER_X transitions.
-            xpos_flat = torch.tensor(
-                [xp for row in xpos_buf for xp in row], dtype=torch.float32
-            )
-            frontier_mask = xpos_flat > FRONTIER_X
-            n_frontier = frontier_mask.sum().item()
-
             # ── PPO update ───────────────────────────────────────────────────────
-            if n_frontier >= MINI_BATCH:
-                frontier_idx = frontier_mask.nonzero(as_tuple=True)[0]
-                n = n_frontier
-            else:
-                frontier_idx = None
-                n = len(S)
+            n = len(S)
             for _ in range(PPO_EPOCHS):
-                if frontier_idx is not None:
-                    perm = torch.randperm(n)
-                    idx = frontier_idx[perm]
-                else:
-                    idx = torch.randperm(n)
+                idx = torch.randperm(n)
                 for start in range(0, n, MINI_BATCH):
                     mb = idx[start:start + MINI_BATCH]
                     mb_s = S[mb].to(device)
