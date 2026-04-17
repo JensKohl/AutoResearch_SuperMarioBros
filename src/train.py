@@ -18,11 +18,10 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from src.constants import TIME_BUDGET, MAX_EPISODE_STEPS, PRO_MOVEMENT
 from src.model import PolicyModel
 
-# PPO ultra-low-temperature sampling from x=1299 (exp156)
-# exp154 TEMP=0.3 worked (x=899), but still oscillated x=303↔x=898.
-# TEMP=0.1 makes workers near-identical to greedy (almost always follow x=899 path).
-# Fewer x=303 failures → PPO sees mostly x=899 trajectories → stable reinforcement.
-# Also add second barrier at x=1100 with higher bonus to push past x=899.
+# PPO TEMP=0.3 + BC self-distillation from x=1299 (exp157)
+# All temperature approaches still degraded greedily despite workers reaching x=899.
+# BC self-distillation: add cross-entropy loss anchoring policy to its OWN current
+# greedy actions. This prevents PPO from changing the greedy action at any state.
 N_WORKERS = 8
 N_STEPS = 128
 LR = 2e-5
@@ -30,7 +29,7 @@ MAX_GRAD_NORM = 0.5
 
 # PPO
 CLIP_EPS = 0.10
-ENTROPY_COEF = 0.001   # minimal entropy at TEMP=0.1
+ENTROPY_COEF = 0.005
 VALUE_COEF = 0.5
 GAE_GAMMA = 0.99
 GAE_LAMBDA = 0.95
@@ -38,11 +37,11 @@ PPO_EPOCHS = 1
 MINI_BATCH = 256
 GREEDY_CHECK_ROLLOUTS = 2
 
-SAMPLE_TEMP = 0.1      # near-greedy: workers replicate the x=899 greedy trajectory
+SAMPLE_TEMP = 0.3      # near-greedy workers generate x=899 trajectories
+BC_COEF = 1.0          # BC self-distillation: anchor to current greedy actions
+
 BARRIER_X = 899
 BARRIER_BONUS = 750.0
-BARRIER2_X = 1100
-BARRIER2_BONUS = 1000.0  # stronger pull past x=899
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 warnings.filterwarnings("ignore")
@@ -121,18 +120,16 @@ class FrameStack(gym.Wrapper):
 
 
 class DistanceReward(gym.Wrapper):
-    """Distance-based reward with two barrier bonuses for first crossing x=BARRIER_X and x=BARRIER2_X."""
+    """Distance-based reward with barrier bonus for first crossing x=BARRIER_X."""
     def __init__(self, env, barrier_bonus=0.0):
         super().__init__(env)
         self.curr_x = 0
         self.barrier_crossed = False
-        self.barrier2_crossed = False
         self.barrier_bonus = barrier_bonus
 
     def reset(self, **kwargs):
         self.curr_x = 0
         self.barrier_crossed = False
-        self.barrier2_crossed = False
         return self.env.reset(**kwargs)
 
     def step(self, action):
@@ -144,9 +141,6 @@ class DistanceReward(gym.Wrapper):
         if self.barrier_bonus > 0 and x_pos > BARRIER_X and not self.barrier_crossed:
             reward += self.barrier_bonus
             self.barrier_crossed = True
-        if x_pos > BARRIER2_X and not self.barrier2_crossed:
-            reward += BARRIER2_BONUS
-            self.barrier2_crossed = True
         if info.get('flag_get', False):
             reward += 1000.0
         return obs, reward, terminated, truncated, info
@@ -349,7 +343,13 @@ def train():
                     surr2 = torch.clamp(ratio, 1 - CLIP_EPS, 1 + CLIP_EPS) * mb_adv
                     policy_loss = -torch.min(surr1, surr2).mean()
                     value_loss = VALUE_COEF * F.mse_loss(vals.squeeze(1), mb_ret)
-                    loss = policy_loss + value_loss - ENTROPY_COEF * entropy
+
+                    # BC self-distillation: anchor policy to its current greedy actions.
+                    # Prevents PPO from changing greedy decisions at any visited state.
+                    greedy_actions = logits.detach().max(1)[1]
+                    bc_loss = F.cross_entropy(logits, greedy_actions)
+
+                    loss = policy_loss + value_loss - ENTROPY_COEF * entropy + BC_COEF * bc_loss
 
                     optimizer.zero_grad()
                     loss.backward()
