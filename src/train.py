@@ -18,10 +18,8 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from src.constants import TIME_BUDGET, MAX_EPISODE_STEPS, PRO_MOVEMENT
 from src.model import PolicyModel
 
-# PPO T=0.3 + LR=3e-6 + safe freeze (exp182)
-# LR=1e-6 stable but too slow. Try LR=3e-6 — previously corrupted x=899 model's x=303
-# but this policy head is newly trained and may have smaller x=303 logit gap.
-# T=0.3 (safer workers) to reduce corruption risk.
+# PPO T=0.3 + LR=3e-6 run 2 (exp183)
+# exp182 improved x=722->723. Continue same config to accumulate more improvement.
 N_WORKERS = 8
 N_STEPS = 128
 LR = 3e-6
