@@ -18,29 +18,29 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from src.constants import TIME_BUDGET, MAX_EPISODE_STEPS, PRO_MOVEMENT
 from src.model import PolicyModel
 
-# PPO CLIP_EPS=0.2 + PPO_EPOCHS=4 + LR=1e-6 + T=0.3 (exp173)
-# Workers reach x>1500 but greedy stuck at x=899. Need larger policy change per rollout.
-# CLIP_EPS=0.2 (standard PPO default) + 4 epochs = 4x more updates, wider update range.
-# Keep T=0.3 (safe) + conv frozen + policy[-1]+value_head trainable.
+# PPO BARRIER_BONUS=10000 + T=0.5 + LR=1e-6 (exp174)
+# Key insight: with LR=1e-6 and BARRIER_BONUS=750, gradient signal is too weak to flip
+# x=899 argmax in 10 min (~667 steps needed vs ~256 available). BARRIER_BONUS=10000
+# gives ~50 steps to flip — achievable within budget. T=0.5 ensures workers cross x=899.
 N_WORKERS = 8
 N_STEPS = 128
 LR = 1e-6
 MAX_GRAD_NORM = 0.5
 
 # PPO
-CLIP_EPS = 0.2
+CLIP_EPS = 0.10
 ENTROPY_COEF = 0.005
 VALUE_COEF = 0.5
 GAE_GAMMA = 0.99
 GAE_LAMBDA = 0.95
-PPO_EPOCHS = 4
+PPO_EPOCHS = 1
 MINI_BATCH = 256
 GREEDY_CHECK_ROLLOUTS = 2
 
-SAMPLE_TEMP = 0.3      # near-greedy workers (safe)
+SAMPLE_TEMP = 0.5      # workers cross x=899 regularly at this temperature
 
 BARRIER_X = 899
-BARRIER_BONUS = 750.0
+BARRIER_BONUS = 10000.0
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 warnings.filterwarnings("ignore")
