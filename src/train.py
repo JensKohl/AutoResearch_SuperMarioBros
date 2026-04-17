@@ -18,10 +18,11 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from src.constants import TIME_BUDGET, MAX_EPISODE_STEPS, PRO_MOVEMENT
 from src.model import PolicyModel
 
-# PPO T=0.5 + LR=1e-6 + reinit value_head (exp168)
-# Model stuck at x=899 score=800. T=0.3 workers follow greedy path, no new exploration.
-# T=0.5: more random actions near x=899 → workers occasionally navigate past x=899.
-# LR=1e-6: slow enough to prevent corruption even with more stochastic exploration.
+# PPO: train beyond_head only, T=0.5, LR=1e-6 (exp169)
+# beyond_head starts at zeros. At LR=1e-6 after 64 rollouts, max correction ≈ 0.005.
+# policy[-1] logit diff at x=303 ≈ 2-5 → beyond_head can't flip it (safe).
+# At x=899+, policy[-1] may be uncertain → 0.005 correction can guide it.
+# T=0.5 + frozen policy[-1] → more exploration without risk of corrupting x=303.
 N_WORKERS = 8
 N_STEPS = 128
 LR = 1e-6
@@ -206,17 +207,15 @@ def train():
     n_actions = envs[0].action_space.n
     model = PolicyModel(n_actions).to(device)
 
-    # Freeze conv + policy[:2] + beyond_head.
-    # Train policy[-1] + value_head. Reinitialize value_head fresh so it
-    # doesn't overestimate x=899 states and generate negative advantages.
+    # Freeze conv + policy (ALL layers). Train beyond_head + value_head.
+    # beyond_head starts at zeros — corrections at x=303 are ~0.005 max (LR=1e-6)
+    # vs policy[-1] logit diff of 2-5 → can't flip x=303 greedy action.
     for p in model.conv.parameters():
         p.requires_grad = False
-    for p in model.policy[:2].parameters():
-        p.requires_grad = False
-    for p in model.beyond_head.parameters():
-        p.requires_grad = False
+    for p in model.policy.parameters():
+        p.requires_grad = False  # entire policy frozen
 
-    trainable = list(model.policy[-1].parameters()) + list(model.value_head.parameters())
+    trainable = list(model.beyond_head.parameters()) + list(model.value_head.parameters())
     optimizer = optim.Adam(trainable, lr=LR, eps=1e-5)
 
     model_path = "MODELS/model.pt"
