@@ -18,13 +18,15 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from src.constants import TIME_BUDGET, MAX_EPISODE_STEPS, PRO_MOVEMENT
 from src.model import PolicyModel
 
-# PPO T=0.3 + LR=3e-6 + reinit value_head (exp166)
-# exp165 was stable at 1699 (no degradation) but no improvement.
-# Try LR=3e-6 (3x faster than exp164's LR=1e-6) to accumulate improvements faster
-# while hopefully still below the corruption threshold.
+# PPO T=0.3 + LR=1e-6 + periodic value_head reinit (exp167)
+# LR=1e-6: stable (no degradation). But first reinit only helps 2 rollouts.
+# Periodic reinit every REINIT_INTERVAL rollouts creates fresh advantage signals
+# repeatedly throughout the run → more opportunities to capture score improvements.
 N_WORKERS = 8
 N_STEPS = 128
-LR = 3e-6
+LR = 1e-6
+
+REINIT_INTERVAL = 8    # reinit value_head every N rollouts
 MAX_GRAD_NORM = 0.5
 
 # PPO
@@ -229,12 +231,10 @@ def train():
         except Exception as e:
             print(f"Load failed ({e}), starting fresh")
 
-    # Reinitialize value_head: prevents stale over-estimates of x=899 states
-    # causing negative advantages that push the policy away from x=899.
+    # Initial value_head reinit for fresh advantage estimates
     for m in model.value_head:
         if hasattr(m, 'reset_parameters'):
             m.reset_parameters()
-    print("Value head reinitialized (fresh advantage estimates)")
 
     best_greedy_x, best_greedy_score = greedy_eval_x(model)
     best_combined = best_greedy_x + best_greedy_score
@@ -356,6 +356,12 @@ def train():
                     optimizer.step()
 
             rollout_count += 1
+
+            # Periodically reinit value_head to keep advantage estimates fresh
+            if rollout_count % REINIT_INTERVAL == 0:
+                for m in model.value_head:
+                    if hasattr(m, 'reset_parameters'):
+                        m.reset_parameters()
 
             if rollout_count % GREEDY_CHECK_ROLLOUTS == 0:
                 gx, gs = greedy_eval_x(model)
