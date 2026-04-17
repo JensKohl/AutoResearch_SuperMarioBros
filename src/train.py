@@ -18,25 +18,25 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from src.constants import TIME_BUDGET, MAX_EPISODE_STEPS, PRO_MOVEMENT
 from src.model import PolicyModel
 
-# PPO LR=1e-4 + conv frozen — stabilize from x=722 toward x=899 (exp180)
-# LR=3e-4 hit x=722 then degraded to x=314 via catastrophic forgetting.
-# LR=1e-4 + frozen conv should be more stable while still learning.
+# PPO T=0.5 + LR=1e-6 + safe freeze — climb from x=722 to x=899 (exp181)
+# Same proven-safe setup as exp164 but starting from x=722 with fresh policy head.
+# Workers at T=0.5 go past x=722 frequently; LR=1e-6 is safe enough not to corrupt x=303.
 N_WORKERS = 8
 N_STEPS = 128
-LR = 1e-4
+LR = 1e-6
 MAX_GRAD_NORM = 0.5
 
 # PPO
-CLIP_EPS = 0.2
-ENTROPY_COEF = 0.01
+CLIP_EPS = 0.10
+ENTROPY_COEF = 0.005
 VALUE_COEF = 0.5
 GAE_GAMMA = 0.99
 GAE_LAMBDA = 0.95
-PPO_EPOCHS = 4
+PPO_EPOCHS = 1
 MINI_BATCH = 256
-GREEDY_CHECK_ROLLOUTS = 4
+GREEDY_CHECK_ROLLOUTS = 2
 
-SAMPLE_TEMP = 0.7      # moderate exploration
+SAMPLE_TEMP = 0.5      # workers explore past x=722 regularly
 
 BARRIER_X = 899
 BARRIER_BONUS = 750.0
@@ -205,10 +205,14 @@ def train():
     n_actions = envs[0].action_space.n
     model = PolicyModel(n_actions).to(device)
 
-    # Freeze conv only. Train policy[:2] + policy[-1] + beyond_head + value_head.
+    # Freeze conv + policy[:2] + beyond_head. Train policy[-1] + value_head.
     for p in model.conv.parameters():
         p.requires_grad = False
-    trainable = [p for p in model.parameters() if p.requires_grad]
+    for p in model.policy[:2].parameters():
+        p.requires_grad = False
+    for p in model.beyond_head.parameters():
+        p.requires_grad = False
+    trainable = list(model.policy[-1].parameters()) + list(model.value_head.parameters())
     optimizer = optim.Adam(trainable, lr=LR, eps=1e-5)
 
     model_path = "MODELS/model.pt"
