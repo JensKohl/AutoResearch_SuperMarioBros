@@ -18,11 +18,11 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from src.constants import TIME_BUDGET, MAX_EPISODE_STEPS, PRO_MOVEMENT
 from src.model import PolicyModel
 
-# PPO T=0.7 + LR=1e-6 + reinit value_head (exp170)
-# Stuck at 1699. Need exploration past x=899.
-# T=0.7: workers take non-greedy action ~45% of the time at frontier states.
-# LR=1e-6: too slow to flip x=303 even with high-noise gradients.
-# Trainable: policy[-1] + value_head (back to full policy training).
+# PPO fully unfrozen + LR=1e-6 + reinit value_head (exp171)
+# Stuck at 1699. Unfreeze ALL layers — give model full freedom to adapt x>899 behavior.
+# Risk: x=303 might corrupt. Reward: model can learn genuinely new paths past x=899.
+# T=0.5: balanced exploration. LR=1e-6: small enough to not catastrophically forget.
+# All params trainable — conv + policy[:2] + policy[-1] + beyond_head + value_head.
 N_WORKERS = 8
 N_STEPS = 128
 LR = 1e-6
@@ -38,7 +38,7 @@ PPO_EPOCHS = 1
 MINI_BATCH = 256
 GREEDY_CHECK_ROLLOUTS = 2
 
-SAMPLE_TEMP = 0.7      # high exploration — workers more often navigate past x=899
+SAMPLE_TEMP = 0.5      # balanced exploration
 
 BARRIER_X = 899
 BARRIER_BONUS = 750.0
@@ -207,15 +207,8 @@ def train():
     n_actions = envs[0].action_space.n
     model = PolicyModel(n_actions).to(device)
 
-    # Freeze conv + policy[:2] + beyond_head. Train policy[-1] + value_head.
-    for p in model.conv.parameters():
-        p.requires_grad = False
-    for p in model.policy[:2].parameters():
-        p.requires_grad = False
-    for p in model.beyond_head.parameters():
-        p.requires_grad = False
-
-    trainable = list(model.policy[-1].parameters()) + list(model.value_head.parameters())
+    # Unfreeze all layers — full model training with small LR to minimize catastrophic forgetting.
+    trainable = list(model.parameters())
     optimizer = optim.Adam(trainable, lr=LR, eps=1e-5)
 
     model_path = "MODELS/model.pt"
