@@ -18,10 +18,10 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from src.constants import TIME_BUDGET, MAX_EPISODE_STEPS, PRO_MOVEMENT
 from src.model import PolicyModel
 
-# PPO T=0.7 + LR=5e-6 (exp195) — push harder past x=1521 with bolder config.
+# PPO T=0.3 + LR=3e-6 (exp196) — back to the formula that pushed x=1520->1523 and scored 700.
 N_WORKERS = 8
 N_STEPS = 128
-LR = 5e-6
+LR = 3e-6
 MAX_GRAD_NORM = 0.5
 
 # PPO
@@ -34,7 +34,7 @@ PPO_EPOCHS = 1
 MINI_BATCH = 256
 GREEDY_CHECK_ROLLOUTS = 2
 
-SAMPLE_TEMP = 0.7      # more exploration past x=1521
+SAMPLE_TEMP = 0.3      # near-greedy: proven to push past barriers via finally-block save
 
 BARRIER_X = 1521
 BARRIER_BONUS = 750.0
