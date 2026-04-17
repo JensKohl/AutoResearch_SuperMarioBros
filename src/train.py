@@ -18,12 +18,13 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from src.constants import TIME_BUDGET, MAX_EPISODE_STEPS, PRO_MOVEMENT
 from src.model import PolicyModel
 
-# PPO T=0.3 + reinit value_head, run 2 (exp163)
-# exp162 worked: reinit value_head gave 1299→1398 (score 400→500).
-# Run again from 1398 checkpoint with same config to continue accumulating improvements.
+# PPO T=0.3 + LR=1e-6 + reinit value_head (exp164)
+# Very low LR: each PPO update makes tiny changes to policy[-1].
+# x=303 greedy action requires a threshold weight change to flip.
+# LR=1e-6 might be too small to ever flip it while still allowing slow improvement.
 N_WORKERS = 8
 N_STEPS = 128
-LR = 2e-5
+LR = 1e-6              # very tiny — changes too small to flip x=303 greedy action
 MAX_GRAD_NORM = 0.5
 
 # PPO
