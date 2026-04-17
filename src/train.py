@@ -20,25 +20,25 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from src.constants import TIME_BUDGET, MAX_EPISODE_STEPS, PRO_MOVEMENT
 from src.model import PolicyModel
 
-# Frozen-feature DQN hyperparameters (exp148)
-# Strategy: keep conv+policy[:2] frozen (good features from exp142 x=898 model),
-#           warm-start policy[-1] Q-head, train with standard DQN.
-#           Frozen features prevent catastrophic forgetting of early-game behavior.
-#           Only the Q-head (policy[-1]) updates via TD-learning.
+# Frozen-feature DQN + fresh Q-head hyperparameters (exp149)
+# Strategy: load conv+policy[:2] frozen from exp142 (proven features).
+#           RESET policy[-1] to fresh Kaiming init — no warm-start Q-head.
+#           Full epsilon exploration (1.0→0.05). High LR for fast fresh learning.
+#           Frozen features should make fresh DQN converge much faster than scratch.
 MEMORY_SIZE = 50000
 BATCH_SIZE = 64
 GAMMA = 0.99
-LR = 1e-5              # very conservative — preserve warm-start behavior
-TARGET_UPDATE = 2000   # training steps between target network updates
+LR = 3e-4              # high LR for fast fresh-head learning
+TARGET_UPDATE = 1000   # training steps between target network updates
 TRAIN_FREQ = 4         # train every 4 env steps
-EPS_START = 0.20       # moderate exploration — good warm start doesn't need full random
-EPS_END = 0.02
-EPS_DECAY = 40000      # decay over 40k env steps
-TRAIN_START = 2000     # start training after buffer has this many transitions
-GREEDY_CHECK_STEPS = 3000  # check greedy every 3000 training steps
+EPS_START = 1.0        # full exploration from start (fresh head needs it)
+EPS_END = 0.05
+EPS_DECAY = 35000      # decay over 35k env steps
+TRAIN_START = 1000     # start training earlier
+GREEDY_CHECK_STEPS = 4000  # check greedy every 4000 training steps
 
 BARRIER_X = 899
-BARRIER_BONUS = 500.0
+BARRIER_BONUS = 300.0
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 warnings.filterwarnings("ignore")
@@ -240,17 +240,20 @@ def train():
     if os.path.exists(model_path):
         try:
             saved = torch.load(model_path, map_location=device)
-            if any(k.startswith('policy.') for k in saved):
-                model.load_state_dict(saved, strict=False)
-                print(f"Warm start: loaded PPO model from {model_path} (frozen features + warm Q-head)")
-            else:
-                model_dict = model.state_dict()
-                conv_weights = {k: v for k, v in saved.items() if k.startswith('conv.')}
-                model_dict.update(conv_weights)
-                model.load_state_dict(model_dict)
-                print(f"Warm start: loaded CNN only, fresh Q-head")
+            # Load ONLY frozen layers (conv + policy[:2]) — skip policy[-1] Q-head.
+            # PPO-trained policy[-1] logits are incompatible as Q-values (exp148 failure).
+            frozen_keys = {k: v for k, v in saved.items()
+                           if k.startswith('conv.') or k in ('policy.0.weight', 'policy.0.bias',
+                                                               'policy.1.weight', 'policy.1.bias')}
+            model_dict = model.state_dict()
+            model_dict.update(frozen_keys)
+            model.load_state_dict(model_dict)
+            # Fresh Kaiming init for Q-head
+            nn.init.kaiming_uniform_(model.policy[-1].weight, nonlinearity='relu')
+            nn.init.zeros_(model.policy[-1].bias)
+            print(f"Features loaded from {model_path}; fresh Kaiming Q-head initialized.")
         except Exception as e:
-            print(f"Warm start failed ({e}), starting fresh")
+            print(f"Feature load failed ({e}), starting fresh")
 
     # Target network: copy entire model, but only policy[-1] will be updated
     target_model = PolicyModel(n_actions).to(device)
