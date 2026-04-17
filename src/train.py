@@ -18,30 +18,29 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from src.constants import TIME_BUDGET, MAX_EPISODE_STEPS, PRO_MOVEMENT
 from src.model import PolicyModel
 
-# PPO variable reward multiplier + LR=1e-6 + reinit (exp172)
-# Workers at T=0.5 already reach x>1500 (mean_reward ~5000), but greedy stuck at x=899.
-# Add 5x reward multiplier for x>899 to create sustained gradient signal past barrier.
-# Same safe LR=1e-6 + conv frozen for stability.
+# PPO CLIP_EPS=0.2 + PPO_EPOCHS=4 + LR=1e-6 + T=0.3 (exp173)
+# Workers reach x>1500 but greedy stuck at x=899. Need larger policy change per rollout.
+# CLIP_EPS=0.2 (standard PPO default) + 4 epochs = 4x more updates, wider update range.
+# Keep T=0.3 (safe) + conv frozen + policy[-1]+value_head trainable.
 N_WORKERS = 8
 N_STEPS = 128
 LR = 1e-6
 MAX_GRAD_NORM = 0.5
 
 # PPO
-CLIP_EPS = 0.10
+CLIP_EPS = 0.2
 ENTROPY_COEF = 0.005
 VALUE_COEF = 0.5
 GAE_GAMMA = 0.99
 GAE_LAMBDA = 0.95
-PPO_EPOCHS = 1
+PPO_EPOCHS = 4
 MINI_BATCH = 256
 GREEDY_CHECK_ROLLOUTS = 2
 
-SAMPLE_TEMP = 0.5      # workers regularly go past x=899 at this temperature
+SAMPLE_TEMP = 0.3      # near-greedy workers (safe)
 
 BARRIER_X = 899
 BARRIER_BONUS = 750.0
-POST_BARRIER_MULT = 5.0  # 5x distance reward for x>BARRIER_X (vs 2x before)
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 warnings.filterwarnings("ignore")
@@ -135,9 +134,7 @@ class DistanceReward(gym.Wrapper):
     def step(self, action):
         obs, reward, terminated, truncated, info = self.env.step(action)
         x_pos = info.get('x_pos', 0)
-        delta_x = x_pos - self.curr_x
-        mult = POST_BARRIER_MULT if x_pos > BARRIER_X else 2.0
-        reward += delta_x * mult
+        reward += (x_pos - self.curr_x) * 2.0
         self.curr_x = x_pos
         reward -= 0.1
         if self.barrier_bonus > 0 and x_pos > BARRIER_X and not self.barrier_crossed:
@@ -209,10 +206,14 @@ def train():
     n_actions = envs[0].action_space.n
     model = PolicyModel(n_actions).to(device)
 
-    # Freeze conv (stability). Train everything else — policy[:2], policy[-1], beyond_head, value_head.
+    # Freeze conv + policy[:2] + beyond_head. Train policy[-1] + value_head.
     for p in model.conv.parameters():
         p.requires_grad = False
-    trainable = [p for p in model.parameters() if p.requires_grad]
+    for p in model.policy[:2].parameters():
+        p.requires_grad = False
+    for p in model.beyond_head.parameters():
+        p.requires_grad = False
+    trainable = list(model.policy[-1].parameters()) + list(model.value_head.parameters())
     optimizer = optim.Adam(trainable, lr=LR, eps=1e-5)
 
     model_path = "MODELS/model.pt"
