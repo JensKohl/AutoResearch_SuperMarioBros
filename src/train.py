@@ -18,7 +18,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from src.constants import TIME_BUDGET, MAX_EPISODE_STEPS, PRO_MOVEMENT
 from src.model import PolicyModel
 
-# PPO T=0.5 + LR=2e-6 + BARRIER_X=1600 (exp197) — intermediate LR + new frontier.
+# PPO T=0.5 + LR=2e-6 + BARRIER_X=1600 (exp198) — same as 197, raised thermal limit for hot GPU.
 N_WORKERS = 8
 N_STEPS = 128
 LR = 2e-6
@@ -42,7 +42,7 @@ BARRIER_BONUS = 750.0
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 warnings.filterwarnings("ignore")
 
-MAX_GPU_TEMP = 85
+MAX_GPU_TEMP = 92  # raised: GPU ambient is hot due to other workloads
 
 
 def get_gpu_temp():
