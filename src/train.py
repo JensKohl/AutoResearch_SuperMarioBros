@@ -18,14 +18,12 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from src.constants import TIME_BUDGET, MAX_EPISODE_STEPS, PRO_MOVEMENT
 from src.model import PolicyModel
 
-# PPO frontier-filtered training: only update on x>FRONTIER_X states (exp175)
-# Key insight: gradients from x<800 states corrupt x=303/722. Filtering to x>800 only
-# targets the x=899 bottleneck without touching early-game behavior.
-# T=0.5 workers reliably reach x>800 → enough frontier data. LR=1e-5 safe when only
-# training on frontier states (no early-game pollution).
+# PPO frontier-filtered training x>800 + LR=1e-6 (exp176)
+# Frontier filter isolates x=899 gradient; LR=1e-6 proven safe even without filter.
+# Combined: gradient purely from x>800 states with safe magnitude → no early corruption.
 N_WORKERS = 8
 N_STEPS = 128
-LR = 1e-5
+LR = 1e-6
 MAX_GRAD_NORM = 0.5
 
 # PPO
