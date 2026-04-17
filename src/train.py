@@ -18,10 +18,11 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from src.constants import TIME_BUDGET, MAX_EPISODE_STEPS, PRO_MOVEMENT
 from src.model import PolicyModel
 
-# PPO TEMP=0.3 + BC self-distillation from x=1299 (exp157)
-# All temperature approaches still degraded greedily despite workers reaching x=899.
-# BC self-distillation: add cross-entropy loss anchoring policy to its OWN current
-# greedy actions. This prevents PPO from changing the greedy action at any state.
+# PPO T=0.5 + fresh barrier at x=1000 (exp158)
+# From x=1299 (already at x=899), every approach degrades immediately.
+# Root cause: model already knows x=899 path. Barrier bonus at x=899 is
+# "expected reward" — workers get it every episode, no gradient to go further.
+# Fix: move barrier to x=1000 (new frontier) + T=0.5 (more exploration past x=899).
 N_WORKERS = 8
 N_STEPS = 128
 LR = 2e-5
@@ -29,7 +30,7 @@ MAX_GRAD_NORM = 0.5
 
 # PPO
 CLIP_EPS = 0.10
-ENTROPY_COEF = 0.005
+ENTROPY_COEF = 0.01    # slightly higher entropy to encourage exploration past x=899
 VALUE_COEF = 0.5
 GAE_GAMMA = 0.99
 GAE_LAMBDA = 0.95
@@ -37,10 +38,9 @@ PPO_EPOCHS = 1
 MINI_BATCH = 256
 GREEDY_CHECK_ROLLOUTS = 2
 
-SAMPLE_TEMP = 0.3      # near-greedy workers generate x=899 trajectories
-BC_COEF = 1.0          # BC self-distillation: anchor to current greedy actions
+SAMPLE_TEMP = 0.5      # more exploration to find x>899 paths
 
-BARRIER_X = 899
+BARRIER_X = 1000       # new frontier — creates gradient pressure to go past x=899
 BARRIER_BONUS = 750.0
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -343,13 +343,7 @@ def train():
                     surr2 = torch.clamp(ratio, 1 - CLIP_EPS, 1 + CLIP_EPS) * mb_adv
                     policy_loss = -torch.min(surr1, surr2).mean()
                     value_loss = VALUE_COEF * F.mse_loss(vals.squeeze(1), mb_ret)
-
-                    # BC self-distillation: anchor policy to its current greedy actions.
-                    # Prevents PPO from changing greedy decisions at any visited state.
-                    greedy_actions = logits.detach().max(1)[1]
-                    bc_loss = F.cross_entropy(logits, greedy_actions)
-
-                    loss = policy_loss + value_loss - ENTROPY_COEF * entropy + BC_COEF * bc_loss
+                    loss = policy_loss + value_loss - ENTROPY_COEF * entropy
 
                     optimizer.zero_grad()
                     loss.backward()
