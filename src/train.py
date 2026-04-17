@@ -18,28 +18,29 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from src.constants import TIME_BUDGET, MAX_EPISODE_STEPS, PRO_MOVEMENT
 from src.model import PolicyModel
 
-# PPO T=0.3 + x_pos-based advantage masking (exp160)
-# Revised root cause: x=303 states appear in ALL trajectories (on the way to x=899).
-# Even in successful episodes, x=303 states have advantages that corrupt the policy.
-# Fix: track x_pos per step, zero advantages for states where x_pos < FRONTIER_X=700.
-# PPO only updates on states past x=700 — x=303 decision is NEVER touched.
+# PPO: freeze policy[-1], train only beyond_head + x_pos mask (exp161)
+# Problem: shared policy[-1] — any update changes logits at ALL states.
+# Fix: freeze policy[-1] completely. Train ONLY beyond_head (starts at zeros).
+# beyond_head correction at x=303 starts at 0 (no-op); policy[-1] dominates there.
+# x_pos mask (FRONTIER_X=700) ensures beyond_head only updates on x>700 states.
+# x=303 behavior: policy[-1] frozen + beyond_head≈0 → IMMUTABLE.
 N_WORKERS = 8
 N_STEPS = 128
-LR = 2e-5
+LR = 1e-4              # higher LR for beyond_head (starts at zero, needs to move)
 MAX_GRAD_NORM = 0.5
 
 # PPO
-CLIP_EPS = 0.10
-ENTROPY_COEF = 0.005
+CLIP_EPS = 0.15
+ENTROPY_COEF = 0.01
 VALUE_COEF = 0.5
 GAE_GAMMA = 0.99
 GAE_LAMBDA = 0.95
-PPO_EPOCHS = 1
+PPO_EPOCHS = 2         # 2 epochs since beyond_head starts far from useful weights
 MINI_BATCH = 256
 GREEDY_CHECK_ROLLOUTS = 2
 
 SAMPLE_TEMP = 0.3      # near-greedy workers generate x=899 trajectories
-FRONTIER_X = 700       # only update on states where x_pos >= FRONTIER_X
+FRONTIER_X = 700       # only update beyond_head on states past x=700
 
 BARRIER_X = 899
 BARRIER_BONUS = 750.0
@@ -208,16 +209,15 @@ def train():
     n_actions = envs[0].action_space.n
     model = PolicyModel(n_actions).to(device)
 
-    # Freeze conv + policy[:2] (good features preserved from exp142 in model.pt).
-    # Train fresh policy[-1] + value_head via PPO.
+    # Freeze EVERYTHING except beyond_head + value_head.
+    # policy[-1] is COMPLETELY FROZEN — x<700 greedy behavior is immutable.
+    # beyond_head starts at zeros; x_pos mask prevents any update at x<700.
     for p in model.conv.parameters():
         p.requires_grad = False
-    for p in model.policy[:2].parameters():
-        p.requires_grad = False
-    for p in model.beyond_head.parameters():
-        p.requires_grad = False
+    for p in model.policy.parameters():
+        p.requires_grad = False  # freeze ALL of policy, including policy[-1]
 
-    trainable = list(model.policy[-1].parameters()) + list(model.value_head.parameters())
+    trainable = list(model.beyond_head.parameters()) + list(model.value_head.parameters())
     optimizer = optim.Adam(trainable, lr=LR, eps=1e-5)
 
     model_path = "MODELS/model.pt"
