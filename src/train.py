@@ -18,15 +18,13 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from src.constants import TIME_BUDGET, MAX_EPISODE_STEPS, PRO_MOVEMENT
 from src.model import PolicyModel
 
-# PPO T=0.3 + LR=1e-6 + periodic value_head reinit (exp167)
-# LR=1e-6: stable (no degradation). But first reinit only helps 2 rollouts.
-# Periodic reinit every REINIT_INTERVAL rollouts creates fresh advantage signals
-# repeatedly throughout the run → more opportunities to capture score improvements.
+# PPO T=0.5 + LR=1e-6 + reinit value_head (exp168)
+# Model stuck at x=899 score=800. T=0.3 workers follow greedy path, no new exploration.
+# T=0.5: more random actions near x=899 → workers occasionally navigate past x=899.
+# LR=1e-6: slow enough to prevent corruption even with more stochastic exploration.
 N_WORKERS = 8
 N_STEPS = 128
 LR = 1e-6
-
-REINIT_INTERVAL = 8    # reinit value_head every N rollouts
 MAX_GRAD_NORM = 0.5
 
 # PPO
@@ -39,7 +37,7 @@ PPO_EPOCHS = 1
 MINI_BATCH = 256
 GREEDY_CHECK_ROLLOUTS = 2
 
-SAMPLE_TEMP = 0.3      # near-greedy workers
+SAMPLE_TEMP = 0.5      # more exploration — workers sometimes venture past x=899
 
 BARRIER_X = 899
 BARRIER_BONUS = 750.0
@@ -356,12 +354,6 @@ def train():
                     optimizer.step()
 
             rollout_count += 1
-
-            # Periodically reinit value_head to keep advantage estimates fresh
-            if rollout_count % REINIT_INTERVAL == 0:
-                for m in model.value_head:
-                    if hasattr(m, 'reset_parameters'):
-                        m.reset_parameters()
 
             if rollout_count % GREEDY_CHECK_ROLLOUTS == 0:
                 gx, gs = greedy_eval_x(model)
