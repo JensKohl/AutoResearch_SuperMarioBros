@@ -18,29 +18,27 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from src.constants import TIME_BUDGET, MAX_EPISODE_STEPS, PRO_MOVEMENT
 from src.model import PolicyModel
 
-# PPO: freeze policy[-1], train only beyond_head + x_pos mask (exp161)
-# Problem: shared policy[-1] — any update changes logits at ALL states.
-# Fix: freeze policy[-1] completely. Train ONLY beyond_head (starts at zeros).
-# beyond_head correction at x=303 starts at 0 (no-op); policy[-1] dominates there.
-# x_pos mask (FRONTIER_X=700) ensures beyond_head only updates on x>700 states.
-# x=303 behavior: policy[-1] frozen + beyond_head≈0 → IMMUTABLE.
+# PPO T=0.3 + reinit value_head (exp162)
+# Hypothesis: value_head is over-estimating x=899 states after exp154-161 training.
+# If V(s_899) >> actual_return, advantage = actual - V < 0 at x=899.
+# Negative advantages at x=899 → PPO says "avoid x=899" → policy degrades.
+# Fix: reinitialize value_head at start; fresh estimates → positive advantages → stable.
 N_WORKERS = 8
 N_STEPS = 128
-LR = 1e-4              # higher LR for beyond_head (starts at zero, needs to move)
+LR = 2e-5
 MAX_GRAD_NORM = 0.5
 
 # PPO
-CLIP_EPS = 0.15
-ENTROPY_COEF = 0.01
+CLIP_EPS = 0.10
+ENTROPY_COEF = 0.005
 VALUE_COEF = 0.5
 GAE_GAMMA = 0.99
 GAE_LAMBDA = 0.95
-PPO_EPOCHS = 2         # 2 epochs since beyond_head starts far from useful weights
+PPO_EPOCHS = 1
 MINI_BATCH = 256
 GREEDY_CHECK_ROLLOUTS = 2
 
-SAMPLE_TEMP = 0.3      # near-greedy workers generate x=899 trajectories
-FRONTIER_X = 700       # only update beyond_head on states past x=700
+SAMPLE_TEMP = 0.3      # near-greedy workers
 
 BARRIER_X = 899
 BARRIER_BONUS = 750.0
@@ -209,15 +207,17 @@ def train():
     n_actions = envs[0].action_space.n
     model = PolicyModel(n_actions).to(device)
 
-    # Freeze EVERYTHING except beyond_head + value_head.
-    # policy[-1] is COMPLETELY FROZEN — x<700 greedy behavior is immutable.
-    # beyond_head starts at zeros; x_pos mask prevents any update at x<700.
+    # Freeze conv + policy[:2] + beyond_head.
+    # Train policy[-1] + value_head. Reinitialize value_head fresh so it
+    # doesn't overestimate x=899 states and generate negative advantages.
     for p in model.conv.parameters():
         p.requires_grad = False
-    for p in model.policy.parameters():
-        p.requires_grad = False  # freeze ALL of policy, including policy[-1]
+    for p in model.policy[:2].parameters():
+        p.requires_grad = False
+    for p in model.beyond_head.parameters():
+        p.requires_grad = False
 
-    trainable = list(model.beyond_head.parameters()) + list(model.value_head.parameters())
+    trainable = list(model.policy[-1].parameters()) + list(model.value_head.parameters())
     optimizer = optim.Adam(trainable, lr=LR, eps=1e-5)
 
     model_path = "MODELS/model.pt"
@@ -229,6 +229,13 @@ def train():
             print(f"Warm start: loaded model from {model_path}")
         except Exception as e:
             print(f"Load failed ({e}), starting fresh")
+
+    # Reinitialize value_head: prevents stale over-estimates of x=899 states
+    # causing negative advantages that push the policy away from x=899.
+    for m in model.value_head:
+        if hasattr(m, 'reset_parameters'):
+            m.reset_parameters()
+    print("Value head reinitialized (fresh advantage estimates)")
 
     best_greedy_x, best_greedy_score = greedy_eval_x(model)
     best_combined = best_greedy_x + best_greedy_score
@@ -251,7 +258,6 @@ def train():
             rewards_buf = []
             dones_buf = []
             values_buf = []
-            xpos_buf = []   # per-step x_pos for advantage masking
 
             for step in range(N_STEPS):
                 states_t = torch.FloatTensor(
@@ -273,7 +279,6 @@ def train():
                 next_states = []
                 rewards_step = []
                 dones_step = []
-                xpos_step = []
 
                 for i in range(N_WORKERS):
                     ns, r, term, trunc, info = envs[i].step(actions[i].item())
@@ -281,7 +286,6 @@ def train():
                     ep_rewards[i] += r
                     rewards_step.append(r)
                     dones_step.append(float(done))
-                    xpos_step.append(float(info.get('x_pos', 0)))
 
                     ct = info.get('time', 0) + info.get('score', 0)
                     if ct > best_total_reward:
@@ -297,13 +301,7 @@ def train():
 
                 rewards_buf.append(torch.tensor(rewards_step, dtype=torch.float32))
                 dones_buf.append(torch.tensor(dones_step, dtype=torch.float32))
-                xpos_buf.append(torch.tensor(xpos_step, dtype=torch.float32))
                 states = next_states
-
-            # Build x_pos-based mask: only update on states past x=FRONTIER_X
-            # This prevents PPO from touching the x=303 critical decision
-            xpos_tensor = torch.stack(xpos_buf)   # shape: (N_STEPS, N_WORKERS)
-            mask = (xpos_tensor >= FRONTIER_X).float()
 
             # ── GAE ──────────────────────────────────────────────────────────────
             with torch.no_grad():
@@ -327,16 +325,7 @@ def train():
             LP = torch.stack(log_probs_buf).view(-1)
             ADV = advantages.view(-1)
             RET = returns.view(-1)
-            MASK = mask.view(-1)
-
-            # Apply advantage masking: zero out steps from failed episodes (x<FILTER_X).
-            # Normalise only over non-masked steps to avoid bias.
-            ADV = ADV * MASK
-            nonzero = MASK.sum()
-            if nonzero > 0:
-                masked_mean = (ADV * MASK).sum() / nonzero
-                masked_std = (((ADV - masked_mean) ** 2 * MASK).sum() / nonzero).sqrt() + 1e-8
-                ADV = (ADV - masked_mean) / masked_std * MASK  # keep zeros at zero
+            ADV = (ADV - ADV.mean()) / (ADV.std() + 1e-8)
 
             # ── PPO update ───────────────────────────────────────────────────────
             n = len(S)
@@ -349,18 +338,17 @@ def train():
                     mb_lp = LP[mb].to(device)
                     mb_adv = ADV[mb].to(device)
                     mb_ret = RET[mb].to(device)
-                    mb_mask = MASK[mb].to(device)
 
                     logits, vals = model.full_forward(mb_s)
                     dist = torch.distributions.Categorical(torch.softmax(logits / SAMPLE_TEMP, dim=1))
                     new_lp = dist.log_prob(mb_a)
-                    entropy = (dist.entropy() * mb_mask).sum() / (mb_mask.sum() + 1e-8)
+                    entropy = dist.entropy().mean()
 
                     ratio = torch.exp(new_lp - mb_lp)
                     surr1 = ratio * mb_adv
                     surr2 = torch.clamp(ratio, 1 - CLIP_EPS, 1 + CLIP_EPS) * mb_adv
-                    policy_loss = -(torch.min(surr1, surr2) * mb_mask).sum() / (mb_mask.sum() + 1e-8)
-                    value_loss = VALUE_COEF * ((vals.squeeze(1) - mb_ret) ** 2 * mb_mask).sum() / (mb_mask.sum() + 1e-8)
+                    policy_loss = -torch.min(surr1, surr2).mean()
+                    value_loss = VALUE_COEF * F.mse_loss(vals.squeeze(1), mb_ret)
                     loss = policy_loss + value_loss - ENTROPY_COEF * entropy
 
                     optimizer.zero_grad()
