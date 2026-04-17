@@ -18,11 +18,10 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from src.constants import TIME_BUDGET, MAX_EPISODE_STEPS, PRO_MOVEMENT
 from src.model import PolicyModel
 
-# PPO low-temperature sampling from x=722 (exp154)
-# Root cause of degradation: stochastic workers die at x=302, generating no
-# x=700+ experience. PPO updates corrupt x=722 behavior based on useless data.
-# Fix: use softmax(logits/TEMP) with TEMP=0.3 — workers act near-greedy,
-# generating x=700+ trajectories that PPO can reinforce rather than corrupt.
+# PPO TEMP=0.3 + KL anchor from x=1299 (exp155)
+# exp154 showed TEMP=0.3 works (x=722→899, total_reward=1299). Still oscillates
+# between x=303 and x=898. Add KL anchor from the new x=1299 model to reduce
+# x=302 crashes while preserving the temperature-induced x=898+ peaks.
 N_WORKERS = 8
 N_STEPS = 128
 LR = 2e-5
@@ -30,7 +29,7 @@ MAX_GRAD_NORM = 0.5
 
 # PPO
 CLIP_EPS = 0.10
-ENTROPY_COEF = 0.005   # lower entropy — consistent with near-greedy sampling
+ENTROPY_COEF = 0.005
 VALUE_COEF = 0.5
 GAE_GAMMA = 0.99
 GAE_LAMBDA = 0.95
@@ -38,9 +37,10 @@ PPO_EPOCHS = 1
 MINI_BATCH = 256
 GREEDY_CHECK_ROLLOUTS = 2
 
-SAMPLE_TEMP = 0.3      # temperature for rollout sampling (1.0=standard PPO, lower=more greedy)
+SAMPLE_TEMP = 0.3      # near-greedy workers prevent x=302 degradation
+KL_COEF = 0.3          # light KL anchor from x=1299 model to reduce oscillation
 
-BARRIER_X = 899
+BARRIER_X = 1100       # push past x=899 now that we can reach it
 BARRIER_BONUS = 750.0
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -229,6 +229,14 @@ def train():
         except Exception as e:
             print(f"Load failed ({e}), starting fresh")
 
+    # KL reference model: frozen copy of warm-start checkpoint
+    ref_model = PolicyModel(n_actions).to(device)
+    ref_model.load_state_dict(model.state_dict())
+    for p in ref_model.parameters():
+        p.requires_grad = False
+    ref_model.eval()
+    print(f"KL reference loaded (KL_COEF={KL_COEF})")
+
     best_greedy_x, best_greedy_score = greedy_eval_x(model)
     best_combined = best_greedy_x + best_greedy_score
     print(f"Baseline: x={best_greedy_x} score={best_greedy_score} combined={best_combined}")
@@ -343,7 +351,15 @@ def train():
                     surr2 = torch.clamp(ratio, 1 - CLIP_EPS, 1 + CLIP_EPS) * mb_adv
                     policy_loss = -torch.min(surr1, surr2).mean()
                     value_loss = VALUE_COEF * F.mse_loss(vals.squeeze(1), mb_ret)
-                    loss = policy_loss + value_loss - ENTROPY_COEF * entropy
+
+                    # KL(π||π_ref): light penalty to anchor policy to x=1299 reference
+                    with torch.no_grad():
+                        ref_logits = ref_model(mb_s)
+                        ref_probs = torch.softmax(ref_logits, dim=1)
+                    curr_probs = torch.softmax(logits, dim=1)
+                    kl_loss = (curr_probs * (torch.log(curr_probs + 1e-8) - torch.log(ref_probs + 1e-8))).sum(1).mean()
+
+                    loss = policy_loss + value_loss - ENTROPY_COEF * entropy + KL_COEF * kl_loss
 
                     optimizer.zero_grad()
                     loss.backward()
